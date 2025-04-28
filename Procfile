@@ -1,12 +1,1 @@
-[phases.setup]
-nixPkgs = ["python3", "gcc"]
-
-[phases.install]
-cmds = [
-  "python -m venv /opt/venv",
-  ". /opt/venv/bin/activate",
-  "pip install -r requirements.txt"
-]
-
-[phases.start]
-cmd = "python bot.py"
+python bot.py
