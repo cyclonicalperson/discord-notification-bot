@@ -4,16 +4,29 @@ import requests
 from bs4 import BeautifulSoup
 import os
 
-# These will be provided by Railway
+# Fetching environment variables (correctly)
 TOKEN = os.getenv('DISCORD_TOKEN')
-CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
-ROLE_ID = int(os.getenv('ROLE_ID'))
+CHANNEL_ID = os.getenv('CHANNEL_ID')  # This will be a string in Railway
+ROLE_ID = os.getenv('ROLE_ID')
 
+# Debugging: Print out the environment variables to check them
+print(f"DISCORD_TOKEN: {TOKEN}")
+print(f"CHANNEL_ID: {CHANNEL_ID}")
+print(f"ROLE_ID: {ROLE_ID}")
+
+# Validate that these variables are not None
+if not TOKEN or not CHANNEL_ID or not ROLE_ID:
+    raise ValueError("Missing required environment variables!")
+
+# Convert CHANNEL_ID and ROLE_ID to integers
+CHANNEL_ID = int(CHANNEL_ID)
+ROLE_ID = int(ROLE_ID)
+
+# Initialize intents and bot client
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
 last_seen_post = None
-
 
 async def check_announcements():
     global last_seen_post
@@ -41,7 +54,7 @@ async def check_announcements():
                         title=post_title,
                         description=summary_text,
                         url=post_link,
-                        color=discord.Color.blue()  # Nice blue color, can customize
+                        color=discord.Color.blue()
                     )
                     embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla")
 
