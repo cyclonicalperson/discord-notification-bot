@@ -3,13 +3,13 @@ import asyncio
 import requests
 from bs4 import BeautifulSoup
 import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
-load_dotenv()
+# load_dotenv()
 
-TOKEN = os.getenv('DISCORD_TOKEN')
-CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
-ROLE_ID = int(os.getenv('ROLE_ID'))
+# TOKEN = os.getenv('DISCORD_TOKEN')
+# CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
+# ROLE_ID = int(os.getenv('ROLE_ID'))
 
 
 intents = discord.Intents.default()
