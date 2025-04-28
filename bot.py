@@ -4,23 +4,19 @@ import requests
 from bs4 import BeautifulSoup
 import os
 
-# Fetching environment variables (correctly)
-TOKEN = os.getenv('DISCORD_TOKEN')
-CHANNEL_ID = os.getenv('CHANNEL_ID')  # This will be a string in Railway
-ROLE_ID = os.getenv('ROLE_ID')
+# Fetching environment variables using os.environ
+TOKEN = os.environ['DISCORD_TOKEN']
+CHANNEL_ID = int(os.environ['CHANNEL_ID'])  # Ensure it's converted to an integer
+ROLE_ID = int(os.environ['ROLE_ID'])
 
 # Debugging: Print out the environment variables to check them
 print(f"DISCORD_TOKEN: {TOKEN}")
 print(f"CHANNEL_ID: {CHANNEL_ID}")
 print(f"ROLE_ID: {ROLE_ID}")
 
-# Validate that these variables are not None
+# Validate that these variables are not None or empty
 if not TOKEN or not CHANNEL_ID or not ROLE_ID:
     raise ValueError("Missing required environment variables!")
-
-# Convert CHANNEL_ID and ROLE_ID to integers
-CHANNEL_ID = int(CHANNEL_ID)
-ROLE_ID = int(ROLE_ID)
 
 # Initialize intents and bot client
 intents = discord.Intents.default()
