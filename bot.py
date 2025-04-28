@@ -4,20 +4,10 @@ import requests
 from bs4 import BeautifulSoup
 import os
 
-# Print all environment variables to check what is available
-print("Environment Variables:")
-for key, value in os.environ.items():
-    print(f"{key}: {value}")
-
 # Fetching environment variables using os.environ
 TOKEN = os.environ['DISCORD_TOKEN']
-CHANNEL_ID = int(os.environ['CHANNEL_ID'])  # Ensure it's converted to an integer
+CHANNEL_ID = int(os.environ['CHANNEL_ID'])
 ROLE_ID = int(os.environ['ROLE_ID'])
-
-# Debugging: Print out the environment variables to check them
-print(f"DISCORD_TOKEN: {TOKEN}")
-print(f"CHANNEL_ID: {CHANNEL_ID}")
-print(f"ROLE_ID: {ROLE_ID}")
 
 # Validate that these variables are not None or empty
 if not TOKEN or not CHANNEL_ID or not ROLE_ID:
@@ -71,6 +61,13 @@ async def check_announcements():
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
+
+    # Send a test message to the channel
+    channel = client.get_channel(CHANNEL_ID)
+    if channel:
+        await channel.send("Test message: The bot is online and working!")
+
+    # Start checking announcements
     client.loop.create_task(check_announcements())
 
 
