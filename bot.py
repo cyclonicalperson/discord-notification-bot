@@ -4,6 +4,11 @@ import requests
 from bs4 import BeautifulSoup
 import os
 
+# Print all environment variables to check what is available
+print("Environment Variables:")
+for key, value in os.environ.items():
+    print(f"{key}: {value}")
+
 # Fetching environment variables using os.environ
 TOKEN = os.environ['DISCORD_TOKEN']
 CHANNEL_ID = int(os.environ['CHANNEL_ID'])  # Ensure it's converted to an integer
@@ -23,6 +28,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
 last_seen_post = None
+
 
 async def check_announcements():
     global last_seen_post
