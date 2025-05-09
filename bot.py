@@ -82,9 +82,12 @@ async def check_announcements():
                         summary_text = summary_elem.text.strip()[:200] + "..." if len(
                             summary_elem.text.strip()) > 200 else summary_elem.text.strip()
 
-                if post_link and post_link not in seen_announcements:
-                    new_announcements.append((post_title, post_link, summary_text))
-                    seen_announcements.add(post_link)
+                # Use a fallback URL if post_link is invalid
+                valid_url = "https://imi.pmf.kg.ac.rs/oglasna-tabla" if not post_link.startswith(
+                    ('http://', 'https://')) else post_link
+                if valid_url not in seen_announcements:
+                    new_announcements.append((post_title, valid_url, summary_text))
+                    seen_announcements.add(valid_url)
 
             # Send notifications for new announcements in chronological order
             for title, link, summary in reversed(new_announcements):
@@ -110,7 +113,9 @@ async def check_announcements():
                 for row in rows[:10]:
                     post_link_elem = row.select_one('.naslov_oglasa a')
                     if post_link_elem and post_link_elem.get('href'):
-                        seen_announcements.add(post_link_elem.get('href'))
+                        valid_url = post_link_elem.get('href') if post_link_elem.get('href').startswith(
+                            ('http://', 'https://')) else "https://imi.pmf.kg.ac.rs/oglasna-tabla"
+                        seen_announcements.add(valid_url)
 
         except requests.RequestException as e:
             logger.error(f"Error fetching webpage: {e}")
