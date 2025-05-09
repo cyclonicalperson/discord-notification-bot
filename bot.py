@@ -6,7 +6,6 @@ import os
 import logging
 from discord.ext import commands
 from dotenv import load_dotenv
-from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,9 +39,52 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Set to store all seen announcement identifiers
 seen_announcements = set()
 
-# Record deployment time
-DEPLOYMENT_TIME = datetime.now()
-logger.info(f"Bot deployed at {DEPLOYMENT_TIME}")
+
+async def scan_initial_announcements():
+    """Scan all announcements on startup and add to seen_announcements without sending notifications."""
+    try:
+        # Fetch the webpage
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get('https://imi.pmf.kg.ac.rs/oglasna-tabla', timeout=10, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Extract all announcement rows
+        rows = soup.select('#oglasna_tabla_id tbody tr')
+        if not rows:
+            logger.warning("No announcement rows found during initial scan")
+            return
+
+        # Process announcements
+        for row in rows:
+            post_link_elem = row.select_one('.naslov_oglasa a')
+            if not post_link_elem:
+                logger.warning("No post link element found in row during initial scan")
+                continue
+            post_link = post_link_elem.get('href', '')
+            post_title = post_link_elem.text.strip()
+
+            # Extract timestamp from the row (assuming second column)
+            timestamp_elem = row.select_one('td:nth-child(2)')
+            timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
+            logger.info(f"Initial scan - Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
+
+            # Use raw href as valid_url
+            valid_url = post_link
+            logger.info(f"Initial scan - Using URL: {valid_url} for announcement: {post_title}")
+
+            # Create a unique identifier using timestamp and URL
+            unique_id = f"{timestamp}:{valid_url}"
+            seen_announcements.add(unique_id)
+
+        logger.info(f"Initial scan complete. Found {len(seen_announcements)} existing announcements.")
+
+    except requests.RequestException as e:
+        logger.error(f"Error fetching webpage during initial scan: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error during initial scan: {e}", exc_info=True)
+
 
 async def check_announcements():
     await bot.wait_until_ready()
@@ -83,22 +125,16 @@ async def check_announcements():
                 timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
                 logger.info(f"Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
 
-                # Parse timestamp to datetime (assuming DD.MM.YYYY format)
-                try:
-                    if timestamp != "No timestamp":
-                        announcement_time = datetime.strptime(timestamp, '%d.%m.%Y')
-                        # Skip announcements older than deployment time
-                        if announcement_time <= DEPLOYMENT_TIME:
-                            logger.info(f"Skipping old announcement: {post_title} (timestamp: {timestamp})")
-                            continue
-                    else:
-                        logger.warning(f"Skipping announcement with invalid timestamp: {post_title}")
-                        continue
-                except ValueError as e:
-                    logger.error(f"Failed to parse timestamp '{timestamp}' for {post_title}: {e}")
-                    continue
+                # Extract summary from modal content if available
+                modal = soup.select_one(f'#{modal_id}')
+                summary_text = "No summary available."
+                if modal:
+                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
+                    if summary_elem:
+                        summary_text = summary_elem.text.strip()[:200] + "..." if len(
+                            summary_elem.text.strip()) > 200 else summary_elem.text.strip()
 
-                # Use raw href as valid_url, even if it's invalid (e.g., '#')
+                # Use raw href as valid_url
                 valid_url = post_link
                 logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
 
@@ -141,15 +177,8 @@ async def check_announcements():
                         valid_url = post_link  # Use raw href
                         timestamp_elem = row.select_one('td:nth-child(2)')
                         timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-                        # Only keep recent announcements
-                        try:
-                            if timestamp != "No timestamp":
-                                announcement_time = datetime.strptime(timestamp, '%d.%m.%Y')
-                                if announcement_time > DEPLOYMENT_TIME:
-                                    unique_id = f"{timestamp}:{valid_url}"
-                                    seen_announcements.add(unique_id)
-                        except ValueError as e:
-                            logger.error(f"Failed to parse timestamp '{timestamp}' during cleanup: {e}")
+                        unique_id = f"{timestamp}:{valid_url}"
+                        seen_announcements.add(unique_id)
 
         except requests.RequestException as e:
             logger.error(f"Error fetching webpage: {e}")
@@ -157,6 +186,7 @@ async def check_announcements():
             logger.error(f"Unexpected error in check_announcements: {e}", exc_info=True)
 
         await asyncio.sleep(300)  # Check every 5 minutes
+
 
 @bot.event
 async def on_ready():
@@ -171,12 +201,17 @@ async def on_ready():
     else:
         logger.error(f"Channel with ID {CHANNEL_ID} not found")
 
+    # Perform initial scan of announcements
+    await scan_initial_announcements()
+
     # Start checking announcements
     bot.loop.create_task(check_announcements())
 
+
 @bot.event
-async def on_error(event, *args, **kwargs):
+async def on_error(event, *args):
     logger.error(f"Unhandled error in {event}: {args}", exc_info=True)
+
 
 @bot.command(name='check')
 @commands.has_permissions(administrator=True)
@@ -187,6 +222,7 @@ async def manual_check(ctx):
     await check_announcements()
     await ctx.send("Check complete!")
 
+
 @manual_check.error
 async def manual_check_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -194,6 +230,7 @@ async def manual_check_error(ctx, error):
     else:
         logger.error(f"Error in manual_check command: {error}")
         await ctx.send("An error occurred while checking announcements.")
+
 
 # Run the bot
 async def main():
