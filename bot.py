@@ -74,7 +74,7 @@ async def check_announcements():
                 post_title = post_link_elem.text.strip()
                 modal_id = post_link_elem.get('data-reveal-id', '')
 
-                # Log the raw href for debugging
+                # Log the raw href and title
                 logger.info(f"Processing announcement: {post_title}, href: {post_link}")
 
                 # Extract summary from modal content if available
@@ -96,8 +96,10 @@ async def check_announcements():
                     seen_announcements.add(valid_url)
 
             # Send notifications for new announcements in chronological order
+            logger.info(f"Found {len(new_announcements)} new announcements to send")
             for title, link, summary in reversed(new_announcements):
                 try:
+                    logger.info(f"Attempting to send notification for: {title}")
                     embed = discord.Embed(
                         title=title,
                         description=summary,
@@ -106,12 +108,15 @@ async def check_announcements():
                     )
                     embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla")
                     await channel.send(content=f"<@&{ROLE_ID}>", embed=embed)
-                    logger.info(f"Sent notification for post: {title} ({link})")
-                except discord.errors.Forbidden:
+                    logger.info(f"Successfully sent notification for post: {title} ({link})")
+                    await asyncio.sleep(1)  # Prevent rate limiting
+                except discord.errors.Forbidden as e:
                     logger.error(
-                        f"Bot lacks permissions to send messages or mention role {ROLE_ID} in channel {CHANNEL_ID}")
+                        f"Bot lacks permissions to send messages or mention role {ROLE_ID} in channel {CHANNEL_ID}: {e}")
                 except discord.errors.HTTPException as e:
-                    logger.error(f"Failed to send notification: {e}")
+                    logger.error(f"Failed to send notification for {title}: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error sending notification for {title}: {e}", exc_info=True)
 
             # Keep only the 50 most recent announcements to avoid memory growth
             if len(seen_announcements) > 50:
@@ -146,6 +151,11 @@ async def on_ready():
 
     # Start checking announcements
     bot.loop.create_task(check_announcements())
+
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    logger.error(f"Unhandled error in {event}: {args}", exc_info=True)
 
 
 @bot.command(name='check')
