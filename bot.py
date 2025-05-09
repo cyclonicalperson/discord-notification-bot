@@ -3,82 +3,170 @@ import asyncio
 import requests
 from bs4 import BeautifulSoup
 import os
+import logging
+from discord.ext import commands
+from dotenv import load_dotenv
 
-# Fetching environment variables using os.environ
-TOKEN = os.environ['DISCORD_TOKEN']
-CHANNEL_ID = int(os.environ['CHANNEL_ID'])
-ROLE_ID = int(os.environ['ROLE_ID'])
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Validate that these variables are not None or empty
+# Load environment variables
+load_dotenv()
+
+# Fetch environment variables
+TOKEN = os.getenv('DISCORD_TOKEN')
+CHANNEL_ID = os.getenv('CHANNEL_ID')
+ROLE_ID = os.getenv('ROLE_ID')
+
+# Validate environment variables
 if not TOKEN or not CHANNEL_ID or not ROLE_ID:
+    logger.error("Missing required environment variables: DISCORD_TOKEN, CHANNEL_ID, or ROLE_ID")
     raise ValueError("Missing required environment variables!")
 
-# Initialize intents and bot client
-intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+try:
+    CHANNEL_ID = int(CHANNEL_ID)
+    ROLE_ID = int(ROLE_ID)
+except ValueError:
+    logger.error("CHANNEL_ID and ROLE_ID must be valid integers")
+    raise ValueError("CHANNEL_ID and ROLE_ID must be valid integers")
 
-last_seen_post = None
+# Initialize intents and bot
+intents = discord.Intents.default()
+intents.message_content = True  # Required for commands
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Set to store all seen announcement links
+seen_announcements = set()
 
 
 async def check_announcements():
-    global last_seen_post
-    await client.wait_until_ready()
-    channel = client.get_channel(CHANNEL_ID)
+    await bot.wait_until_ready()
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        logger.error(f"Channel with ID {CHANNEL_ID} not found")
+        return
 
-    while not client.is_closed():
+    while not bot.is_closed():
         try:
-            response = requests.get('https://imi.pmf.kg.ac.rs/oglasna-tabla', timeout=10)
+            # Fetch the webpage
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            response = requests.get('https://imi.pmf.kg.ac.rs/oglasna-tabla', timeout=10, headers=headers)
+            response.raise_for_status()  # Raise exception for bad status codes
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            posts = soup.select('.entry-title a')
-            summaries = soup.select('.td-excerpt')
+            # Extract all announcement rows
+            rows = soup.select('#oglasna_tabla_id tbody tr')
+            if not rows:
+                logger.warning("No announcement rows found on the webpage")
+                await asyncio.sleep(300)
+                continue
 
-            if posts:
-                latest_post = posts[0]
-                post_title = latest_post.text.strip()
-                post_link = latest_post['href']
-                summary_text = summaries[0].text.strip() if summaries else "No summary available."
+            # Process announcements in reverse order to notify oldest to newest
+            new_announcements = []
+            for row in rows:
+                post_link_elem = row.select_one('.naslov_oglasa a')
+                if not post_link_elem:
+                    continue
+                post_link = post_link_elem.get('href', '')
+                post_title = post_link_elem.text.strip()
+                modal_id = post_link_elem.get('data-reveal-id', '')
 
-                if last_seen_post != post_link:
-                    last_seen_post = post_link
+                # Extract summary from modal content if available
+                modal = soup.select_one(f'#{modal_id}')
+                summary_text = "No summary available."
+                if modal:
+                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
+                    if summary_elem:
+                        summary_text = summary_elem.text.strip()[:200] + "..." if len(
+                            summary_elem.text.strip()) > 200 else summary_elem.text.strip()
 
+                if post_link and post_link not in seen_announcements:
+                    new_announcements.append((post_title, post_link, summary_text))
+                    seen_announcements.add(post_link)
+
+            # Send notifications for new announcements in chronological order
+            for title, link, summary in reversed(new_announcements):
+                try:
                     embed = discord.Embed(
-                        title=post_title,
-                        description=summary_text,
-                        url=post_link,
+                        title=title,
+                        description=summary,
+                        url=link,
                         color=discord.Color.blue()
                     )
                     embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla")
-
                     await channel.send(content=f"<@&{ROLE_ID}>", embed=embed)
+                    logger.info(f"Sent notification for post: {title} ({link})")
+                except discord.errors.Forbidden:
+                    logger.error(
+                        f"Bot lacks permissions to send messages or mention role {ROLE_ID} in channel {CHANNEL_ID}")
+                except discord.errors.HTTPException as e:
+                    logger.error(f"Failed to send notification: {e}")
 
+            # Keep only the 50 most recent announcements to avoid memory growth
+            if len(seen_announcements) > 50:
+                seen_announcements.clear()
+                for row in rows[:10]:
+                    post_link_elem = row.select_one('.naslov_oglasa a')
+                    if post_link_elem and post_link_elem.get('href'):
+                        seen_announcements.add(post_link_elem.get('href'))
+
+        except requests.RequestException as e:
+            logger.error(f"Error fetching webpage: {e}")
         except Exception as e:
-            print(f"Error fetching posts: {e}")
+            logger.error(f"Unexpected error in check_announcements: {e}")
 
-        await asyncio.sleep(300)  # 5 minutes
+        await asyncio.sleep(300)  # Check every 5 minutes
 
 
-@client.event
+@bot.event
 async def on_ready():
-    print(f'Logged in as {client.user}')
-
-    # Send a test message to the channel
-    channel = client.get_channel(CHANNEL_ID)
+    logger.info(f'Logged in as {bot.user}')
+    channel = bot.get_channel(CHANNEL_ID)
     if channel:
-        await channel.send("Test message: The bot is online and working!")
+        try:
+            await channel.send("Test message: The bot is online and working!")
+            logger.info("Sent test message to channel")
+        except discord.errors.Forbidden:
+            logger.error(f"Bot lacks permissions to send messages in channel {CHANNEL_ID}")
+    else:
+        logger.error(f"Channel with ID {CHANNEL_ID} not found")
 
     # Start checking announcements
-    client.loop.create_task(check_announcements())
+    bot.loop.create_task(check_announcements())
 
 
-def run_bot():
+@bot.command(name='check')
+@commands.has_permissions(administrator=True)
+async def manual_check(ctx):
+    """Manually trigger an announcement check"""
+    logger.info(f"Manual check triggered by {ctx.author}")
+    await ctx.send("Checking for new announcements...")
+    await check_announcements()
+    await ctx.send("Check complete!")
+
+
+@manual_check.error
+async def manual_check_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You need administrator permissions to use this command.")
+    else:
+        logger.error(f"Error in manual_check command: {error}")
+        await ctx.send("An error occurred while checking announcements.")
+
+
+# Run the bot
+async def main():
     try:
-        client.run(TOKEN)
+        await bot.start(TOKEN)
+    except discord.errors.LoginFailure:
+        logger.error("Invalid bot token provided")
     except Exception as e:
-        print(f'Bot crashed with error: {e}. Restarting...')
-        asyncio.sleep(5)
-        run_bot()
+        logger.error(f"Bot crashed with error: {e}")
+        await asyncio.sleep(5)
+        await main()  # Retry after delay
 
 
 if __name__ == "__main__":
-    run_bot()
+    asyncio.run(main())
