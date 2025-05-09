@@ -36,9 +36,8 @@ intents = discord.Intents.default()
 intents.message_content = True  # Required for commands
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Set to store all seen announcement links
+# Set to store all seen announcement identifiers
 seen_announcements = set()
-
 
 async def check_announcements():
     await bot.wait_until_ready()
@@ -63,7 +62,7 @@ async def check_announcements():
                 await asyncio.sleep(300)
                 continue
 
-            # Process announcements in reverse order to notify oldest to newest
+            # Process announcements
             new_announcements = []
             for row in rows:
                 post_link_elem = row.select_one('.naslov_oglasa a')
@@ -74,8 +73,10 @@ async def check_announcements():
                 post_title = post_link_elem.text.strip()
                 modal_id = post_link_elem.get('data-reveal-id', '')
 
-                # Log the raw href and title
-                logger.info(f"Processing announcement: {post_title}, href: {post_link}")
+                # Extract timestamp from the row (adjust selector based on HTML structure)
+                timestamp_elem = row.select_one('td:nth-child(2)')  # Assuming timestamp is in second column
+                timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
+                logger.info(f"Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
 
                 # Extract summary from modal content if available
                 modal = soup.select_one(f'#{modal_id}')
@@ -91,9 +92,11 @@ async def check_announcements():
                     ('http://', 'https://')) else post_link
                 logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
 
-                if valid_url not in seen_announcements:
+                # Create a unique identifier using timestamp and URL
+                unique_id = f"{timestamp}:{valid_url}"
+                if unique_id not in seen_announcements:
                     new_announcements.append((post_title, valid_url, summary_text))
-                    seen_announcements.add(valid_url)
+                    seen_announcements.add(unique_id)
 
             # Send notifications for new announcements in chronological order
             logger.info(f"Found {len(new_announcements)} new announcements to send")
@@ -124,9 +127,13 @@ async def check_announcements():
                 for row in rows[:10]:
                     post_link_elem = row.select_one('.naslov_oglasa a')
                     if post_link_elem and post_link_elem.get('href'):
-                        valid_url = post_link_elem.get('href') if post_link_elem.get('href').startswith(
+                        post_link = post_link_elem.get('href')
+                        valid_url = post_link if post_link.startswith(
                             ('http://', 'https://')) else "https://imi.pmf.kg.ac.rs/oglasna-tabla"
-                        seen_announcements.add(valid_url)
+                        timestamp_elem = row.select_one('td:nth-child(2)')  # Same selector as above
+                        timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
+                        unique_id = f"{timestamp}:{valid_url}"
+                        seen_announcements.add(unique_id)
 
         except requests.RequestException as e:
             logger.error(f"Error fetching webpage: {e}")
@@ -134,7 +141,6 @@ async def check_announcements():
             logger.error(f"Unexpected error in check_announcements: {e}", exc_info=True)
 
         await asyncio.sleep(300)  # Check every 5 minutes
-
 
 @bot.event
 async def on_ready():
@@ -152,11 +158,9 @@ async def on_ready():
     # Start checking announcements
     bot.loop.create_task(check_announcements())
 
-
 @bot.event
 async def on_error(event, *args, **kwargs):
     logger.error(f"Unhandled error in {event}: {args}", exc_info=True)
-
 
 @bot.command(name='check')
 @commands.has_permissions(administrator=True)
@@ -167,7 +171,6 @@ async def manual_check(ctx):
     await check_announcements()
     await ctx.send("Check complete!")
 
-
 @manual_check.error
 async def manual_check_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -175,7 +178,6 @@ async def manual_check_error(ctx, error):
     else:
         logger.error(f"Error in manual_check command: {error}")
         await ctx.send("An error occurred while checking announcements.")
-
 
 # Run the bot
 async def main():
@@ -187,7 +189,6 @@ async def main():
         logger.error(f"Bot crashed with error: {e}", exc_info=True)
         await asyncio.sleep(5)
         await main()  # Retry after delay
-
 
 if __name__ == "__main__":
     asyncio.run(main())
