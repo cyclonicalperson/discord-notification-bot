@@ -6,6 +6,7 @@ import os
 import logging
 from discord.ext import commands
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,6 +39,10 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Set to store all seen announcement identifiers
 seen_announcements = set()
+
+# Record deployment time
+DEPLOYMENT_TIME = datetime.now()
+logger.info(f"Bot deployed at {DEPLOYMENT_TIME}")
 
 async def check_announcements():
     await bot.wait_until_ready()
@@ -73,10 +78,25 @@ async def check_announcements():
                 post_title = post_link_elem.text.strip()
                 modal_id = post_link_elem.get('data-reveal-id', '')
 
-                # Extract timestamp from the row (adjust selector based on HTML structure)
-                timestamp_elem = row.select_one('td:nth-child(2)')  # Assuming timestamp is in second column
+                # Extract timestamp from the row (assuming second column)
+                timestamp_elem = row.select_one('td:nth-child(2)')
                 timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
                 logger.info(f"Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
+
+                # Parse timestamp to datetime (assuming DD.MM.YYYY format)
+                try:
+                    if timestamp != "No timestamp":
+                        announcement_time = datetime.strptime(timestamp, '%d.%m.%Y')
+                        # Skip announcements older than deployment time
+                        if announcement_time <= DEPLOYMENT_TIME:
+                            logger.info(f"Skipping old announcement: {post_title} (timestamp: {timestamp})")
+                            continue
+                    else:
+                        logger.warning(f"Skipping announcement with invalid timestamp: {post_title}")
+                        continue
+                except ValueError as e:
+                    logger.error(f"Failed to parse timestamp '{timestamp}' for {post_title}: {e}")
+                    continue
 
                 # Extract summary from modal content if available
                 modal = soup.select_one(f'#{modal_id}')
@@ -130,10 +150,17 @@ async def check_announcements():
                         post_link = post_link_elem.get('href')
                         valid_url = post_link if post_link.startswith(
                             ('http://', 'https://')) else "https://imi.pmf.kg.ac.rs/oglasna-tabla"
-                        timestamp_elem = row.select_one('td:nth-child(2)')  # Same selector as above
+                        timestamp_elem = row.select_one('td:nth-child(2)')
                         timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-                        unique_id = f"{timestamp}:{valid_url}"
-                        seen_announcements.add(unique_id)
+                        # Only keep recent announcements
+                        try:
+                            if timestamp != "No timestamp":
+                                announcement_time = datetime.strptime(timestamp, '%d.%m.%Y')
+                                if announcement_time > DEPLOYMENT_TIME:
+                                    unique_id = f"{timestamp}:{valid_url}"
+                                    seen_announcements.add(unique_id)
+                        except ValueError as e:
+                            logger.error(f"Failed to parse timestamp '{timestamp}' during cleanup: {e}")
 
         except requests.RequestException as e:
             logger.error(f"Error fetching webpage: {e}")
