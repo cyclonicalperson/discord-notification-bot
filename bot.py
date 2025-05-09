@@ -98,18 +98,8 @@ async def check_announcements():
                     logger.error(f"Failed to parse timestamp '{timestamp}' for {post_title}: {e}")
                     continue
 
-                # Extract summary from modal content if available
-                modal = soup.select_one(f'#{modal_id}')
-                summary_text = "No summary available."
-                if modal:
-                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
-                    if summary_elem:
-                        summary_text = summary_elem.text.strip()[:200] + "..." if len(
-                            summary_elem.text.strip()) > 200 else summary_elem.text.strip()
-
-                # Use a fallback URL if post_link is invalid
-                valid_url = "https://imi.pmf.kg.ac.rs/oglasna-tabla" if not post_link.startswith(
-                    ('http://', 'https://')) else post_link
+                # Use raw href as valid_url, even if it's invalid (e.g., '#')
+                valid_url = post_link
                 logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
 
                 # Create a unique identifier using timestamp and URL
@@ -148,8 +138,7 @@ async def check_announcements():
                     post_link_elem = row.select_one('.naslov_oglasa a')
                     if post_link_elem and post_link_elem.get('href'):
                         post_link = post_link_elem.get('href')
-                        valid_url = post_link if post_link.startswith(
-                            ('http://', 'https://')) else "https://imi.pmf.kg.ac.rs/oglasna-tabla"
+                        valid_url = post_link  # Use raw href
                         timestamp_elem = row.select_one('td:nth-child(2)')
                         timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
                         # Only keep recent announcements
