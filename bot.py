@@ -53,7 +53,7 @@ async def check_announcements():
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
             response = requests.get('https://imi.pmf.kg.ac.rs/oglasna-tabla', timeout=10, headers=headers)
-            response.raise_for_status()  # Raise exception for bad status codes
+            response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
 
             # Extract all announcement rows
@@ -68,10 +68,14 @@ async def check_announcements():
             for row in rows:
                 post_link_elem = row.select_one('.naslov_oglasa a')
                 if not post_link_elem:
+                    logger.warning("No post link element found in row")
                     continue
                 post_link = post_link_elem.get('href', '')
                 post_title = post_link_elem.text.strip()
                 modal_id = post_link_elem.get('data-reveal-id', '')
+
+                # Log the raw href for debugging
+                logger.info(f"Processing announcement: {post_title}, href: {post_link}")
 
                 # Extract summary from modal content if available
                 modal = soup.select_one(f'#{modal_id}')
@@ -85,6 +89,8 @@ async def check_announcements():
                 # Use a fallback URL if post_link is invalid
                 valid_url = "https://imi.pmf.kg.ac.rs/oglasna-tabla" if not post_link.startswith(
                     ('http://', 'https://')) else post_link
+                logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
+
                 if valid_url not in seen_announcements:
                     new_announcements.append((post_title, valid_url, summary_text))
                     seen_announcements.add(valid_url)
@@ -120,7 +126,7 @@ async def check_announcements():
         except requests.RequestException as e:
             logger.error(f"Error fetching webpage: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error in check_announcements: {e}")
+            logger.error(f"Unexpected error in check_announcements: {e}", exc_info=True)
 
         await asyncio.sleep(300)  # Check every 5 minutes
 
@@ -168,7 +174,7 @@ async def main():
     except discord.errors.LoginFailure:
         logger.error("Invalid bot token provided")
     except Exception as e:
-        logger.error(f"Bot crashed with error: {e}")
+        logger.error(f"Bot crashed with error: {e}", exc_info=True)
         await asyncio.sleep(5)
         await main()  # Retry after delay
 
