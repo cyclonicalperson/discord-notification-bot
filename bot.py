@@ -6,6 +6,7 @@ import os
 import logging
 from discord.ext import commands
 from dotenv import load_dotenv
+from urllib.parse import urljoin
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,52 +40,101 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Set to store all seen announcement identifiers
 seen_announcements = set()
 
-
 async def scan_initial_announcements():
-    """Scan all announcements on startup and add to seen_announcements without sending notifications."""
+    """Scan all announcements on startup, add to seen_announcements, and send test messages without pings."""
     try:
-        # Fetch the webpage
+        base_url = 'https://imi.pmf.kg.ac.rs/oglasna-tabla'
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get('https://imi.pmf.kg.ac.rs/oglasna-tabla', timeout=10, headers=headers)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Extract all announcement rows
-        rows = soup.select('#oglasna_tabla_id tbody tr')
-        if not rows:
-            logger.warning("No announcement rows found during initial scan")
+        total_rows = 0
+        page_count = 0
+        channel = bot.get_channel(CHANNEL_ID)
+        if not channel:
+            logger.error(f"Channel with ID {CHANNEL_ID} not found during initial scan")
             return
 
-        # Process announcements
-        for row in rows:
-            post_link_elem = row.select_one('.naslov_oglasa a')
-            if not post_link_elem:
-                logger.warning("No post link element found in row during initial scan")
-                continue
-            post_link = post_link_elem.get('href', '')
-            post_title = post_link_elem.text.strip()
+        # Process all pages
+        current_url = base_url
+        while current_url:
+            page_count += 1
+            logger.info(f"Initial scan - Fetching page {page_count}: {current_url}")
+            response = requests.get(current_url, timeout=10, headers=headers)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Extract timestamp from the row (assuming second column)
-            timestamp_elem = row.select_one('td:nth-child(2)')
-            timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-            logger.info(f"Initial scan - Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
+            # Extract all announcement rows
+            rows = soup.select('#oglasna_tabla_id tbody tr')
+            logger.info(f"Initial scan - Found {len(rows)} rows on page {page_count}")
+            if not rows:
+                logger.warning(f"No announcement rows found on page: {current_url}")
+            else:
+                total_rows += len(rows)
+                for row in rows:
+                    post_link_elem = row.select_one('.naslov_oglasa a')
+                    if not post_link_elem:
+                        logger.warning("No post link element found in row during initial scan")
+                        continue
+                    post_link = post_link_elem.get('href', '')
+                    post_title = post_link_elem.text.strip()
+                    modal_id = post_link_elem.get('data-reveal-id', '')
 
-            # Use raw href as valid_url
-            valid_url = post_link
-            logger.info(f"Initial scan - Using URL: {valid_url} for announcement: {post_title}")
+                    # Extract timestamp from the row (assuming second column)
+                    timestamp_elem = row.select_one('td:nth-child(2)')
+                    timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
+                    logger.info(f"Initial scan - Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
 
-            # Create a unique identifier using timestamp and URL
-            unique_id = f"{timestamp}:{valid_url}"
-            seen_announcements.add(unique_id)
+                    # Extract summary from modal content if available
+                    modal = soup.select_one(f'#{modal_id}')
+                    summary_text = "No summary available."
+                    if modal:
+                        summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
+                        if summary_elem:
+                            summary_text = summary_elem.text.strip()[:200] + "..." if len(
+                                summary_elem.text.strip()) > 200 else summary_elem.text.strip()
 
-        logger.info(f"Initial scan complete. Found {len(seen_announcements)} existing announcements.")
+                    # Use raw href as valid_url
+                    valid_url = post_link
+                    logger.info(f"Initial scan - Using URL: {valid_url} for announcement: {post_title}")
+
+                    # Create a unique identifier using timestamp and URL
+                    unique_id = f"{timestamp}:{valid_url}"
+                    seen_announcements.add(unique_id)
+
+                    # Send test message for this announcement (without ping)
+                    try:
+                        logger.info(f"Initial scan - Sending test message for: {post_title}")
+                        embed = discord.Embed(
+                            title=post_title,
+                            description=f"{summary_text}\n\nVisit https://imi.pmf.kg.ac.rs/oglasna-tabla for details.",
+                            url=valid_url,
+                            color=discord.Color.blue()
+                        )
+                        embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla (Test Message)")
+                        await channel.send(embed=embed)
+                        logger.info(f"Initial scan - Successfully sent test message for: {post_title} ({valid_url})")
+                        await asyncio.sleep(1)  # Prevent rate limiting
+                    except discord.errors.Forbidden as e:
+                        logger.error(f"Bot lacks permissions to send test message in channel {CHANNEL_ID}: {e}")
+                    except discord.errors.HTTPException as e:
+                        logger.error(f"Failed to send test message for {post_title}: {e}")
+                    except Exception as e:
+                        logger.error(f"Unexpected error sending test message for {post_title}: {e}", exc_info=True)
+
+            # Check for next page
+            next_link = soup.select_one('a.next, a[rel="next"], a.page-link, a[href*="page="], a[href*="/page/"]')
+            if next_link and next_link.get('href'):
+                current_url = urljoin(base_url, next_link['href'])
+                logger.info(f"Initial scan - Found next page: {current_url}")
+            else:
+                current_url = None
+                logger.info("Initial scan - No next page found, ending scan")
+
+        logger.info(f"Initial scan complete. Found {total_rows} existing announcements across {page_count} pages.")
 
     except requests.RequestException as e:
         logger.error(f"Error fetching webpage during initial scan: {e}")
     except Exception as e:
         logger.error(f"Unexpected error during initial scan: {e}", exc_info=True)
-
 
 async def check_announcements():
     await bot.wait_until_ready()
@@ -95,63 +145,81 @@ async def check_announcements():
 
     while not bot.is_closed():
         try:
-            # Fetch the webpage
+            base_url = 'https://imi.pmf.kg.ac.rs/oglasna-tabla'
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-            response = requests.get('https://imi.pmf.kg.ac.rs/oglasna-tabla', timeout=10, headers=headers)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Extract all announcement rows
-            rows = soup.select('#oglasna_tabla_id tbody tr')
-            if not rows:
-                logger.warning("No announcement rows found on the webpage")
-                await asyncio.sleep(300)
-                continue
-
-            # Process announcements
             new_announcements = []
-            for row in rows:
-                post_link_elem = row.select_one('.naslov_oglasa a')
-                if not post_link_elem:
-                    logger.warning("No post link element found in row")
-                    continue
-                post_link = post_link_elem.get('href', '')
-                post_title = post_link_elem.text.strip()
-                modal_id = post_link_elem.get('data-reveal-id', '')
+            total_rows = 0
+            page_count = 0
 
-                # Extract timestamp from the row (assuming second column)
-                timestamp_elem = row.select_one('td:nth-child(2)')
-                timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-                logger.info(f"Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
+            # Process all pages
+            current_url = base_url
+            while current_url:
+                page_count += 1
+                logger.info(f"Fetching page {page_count}: {current_url}")
+                response = requests.get(current_url, timeout=10, headers=headers)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
 
-                # Extract summary from modal content if available
-                modal = soup.select_one(f'#{modal_id}')
-                summary_text = "No summary available."
-                if modal:
-                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
-                    if summary_elem:
-                        summary_text = summary_elem.text.strip()[:200] + "..." if len(
-                            summary_elem.text.strip()) > 200 else summary_elem.text.strip()
+                # Extract all announcement rows
+                rows = soup.select('#oglasna_tabla_id tbody tr')
+                logger.info(f"Found {len(rows)} rows on page {page_count}")
+                if not rows:
+                    logger.warning(f"No announcement rows found on page: {current_url}")
+                else:
+                    total_rows += len(rows)
+                    for row in rows:
+                        post_link_elem = row.select_one('.naslov_oglasa a')
+                        if not post_link_elem:
+                            logger.warning("No post link element found in row")
+                            continue
+                        post_link = post_link_elem.get('href', '')
+                        post_title = post_link_elem.text.strip()
+                        modal_id = post_link_elem.get('data-reveal-id', '')
 
-                # Use raw href as valid_url
-                valid_url = post_link
-                logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
+                        # Extract timestamp from the row (assuming second column)
+                        timestamp_elem = row.select_one('td:nth-child(2)')
+                        timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
+                        logger.info(f"Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
 
-                # Create a unique identifier using timestamp and URL
-                unique_id = f"{timestamp}:{valid_url}"
-                if unique_id not in seen_announcements:
-                    new_announcements.append((post_title, valid_url, summary_text))
-                    seen_announcements.add(unique_id)
+                        # Extract summary from modal content if available
+                        modal = soup.select_one(f'#{modal_id}')
+                        summary_text = "No summary available."
+                        if modal:
+                            summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
+                            if summary_elem:
+                                summary_text = summary_elem.text.strip()[:200] + "..." if len(
+                                    summary_elem.text.strip()) > 200 else summary_elem.text.strip()
+
+                        # Use raw href as valid_url
+                        valid_url = post_link
+                        logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
+
+                        # Create a unique identifier using timestamp and URL
+                        unique_id = f"{timestamp}:{valid_url}"
+                        if unique_id not in seen_announcements:
+                            new_announcements.append((post_title, valid_url, summary_text))
+                            seen_announcements.add(unique_id)
+
+                # Check for next page
+                next_link = soup.select_one('a.next, a[rel="next"], a.page-link, a[href*="page="], a[href*="/page/"]')
+                if next_link and next_link.get('href'):
+                    current_url = urljoin(base_url, next_link['href'])
+                    logger.info(f"Found next page: {current_url}")
+                else:
+                    current_url = None
+                    logger.info("No next page found, ending check")
 
             # Send notifications for new announcements in chronological order
-            logger.info(f"Found {len(new_announcements)} new announcements to send")
+            logger.info(f"Found {len(new_announcements)} new announcements to send (processed {total_rows} total posts across {page_count} pages)")
+            if not new_announcements and total_rows <= 20:
+                logger.warning("No new announcements found and 20 or fewer posts processed. Possible pagination or JavaScript loading issue. Consider using selenium to render dynamic content.")
             for title, link, summary in reversed(new_announcements):
                 try:
                     logger.info(f"Attempting to send notification for: {title}")
                     embed = discord.Embed(
                         title=title,
-                        description=summary,
+                        description=f"{summary}\n\nVisit https://imi.pmf.kg.ac.rs/oglasna-tabla for details.",
                         url=link,
                         color=discord.Color.blue()
                     )
@@ -170,6 +238,7 @@ async def check_announcements():
             # Keep only the 50 most recent announcements to avoid memory growth
             if len(seen_announcements) > 50:
                 seen_announcements.clear()
+                # Use the most recent rows from the last page processed
                 for row in rows[:10]:
                     post_link_elem = row.select_one('.naslov_oglasa a')
                     if post_link_elem and post_link_elem.get('href'):
@@ -187,14 +256,13 @@ async def check_announcements():
 
         await asyncio.sleep(300)  # Check every 5 minutes
 
-
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
         try:
-            await channel.send("Test message: The bot is online and working!")
+            await channel.send("Test message: The bot is online and working! Starting initial scan of announcements...")
             logger.info("Sent test message to channel")
         except discord.errors.Forbidden:
             logger.error(f"Bot lacks permissions to send messages in channel {CHANNEL_ID}")
@@ -207,11 +275,9 @@ async def on_ready():
     # Start checking announcements
     bot.loop.create_task(check_announcements())
 
-
 @bot.event
-async def on_error(event, *args):
+async def on_error(event, *args, **kwargs):
     logger.error(f"Unhandled error in {event}: {args}", exc_info=True)
-
 
 @bot.command(name='check')
 @commands.has_permissions(administrator=True)
@@ -222,7 +288,6 @@ async def manual_check(ctx):
     await check_announcements()
     await ctx.send("Check complete!")
 
-
 @manual_check.error
 async def manual_check_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -230,7 +295,6 @@ async def manual_check_error(ctx, error):
     else:
         logger.error(f"Error in manual_check command: {error}")
         await ctx.send("An error occurred while checking announcements.")
-
 
 # Run the bot
 async def main():
