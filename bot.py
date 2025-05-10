@@ -78,10 +78,12 @@ async def scan_initial_announcements():
                     post_title = post_link_elem.text.strip()
                     modal_id = post_link_elem.get('data-reveal-id', '')
 
-                    # Extract timestamp from the row (assuming second column)
-                    timestamp_elem = row.select_one('td:nth-child(2)')
-                    timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-                    logger.info(f"Initial scan - Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
+                    # Skip if no modal_id
+                    if not modal_id:
+                        logger.warning(f"No modal_id found for announcement: {post_title}, skipping")
+                        continue
+
+                    logger.info(f"Initial scan - Processing announcement: {post_title}, href: {post_link}, modal_id: {modal_id}")
 
                     # Extract summary from modal content if available
                     modal = soup.select_one(f'#{modal_id}')
@@ -96,8 +98,8 @@ async def scan_initial_announcements():
                     valid_url = post_link
                     logger.info(f"Initial scan - Using URL: {valid_url} for announcement: {post_title}")
 
-                    # Create a unique identifier using timestamp and URL
-                    unique_id = f"{timestamp}:{valid_url}"
+                    # Create a unique identifier using modal_id
+                    unique_id = modal_id
                     seen_announcements.add(unique_id)
 
                     # Send test message for this announcement (without ping)
@@ -106,12 +108,16 @@ async def scan_initial_announcements():
                         embed = discord.Embed(
                             title=post_title,
                             description=f"{summary_text}\n\nVisit https://imi.pmf.kg.ac.rs/oglasna-tabla for details.",
-                            url=valid_url,
                             color=discord.Color.blue()
                         )
                         embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla (Test Message)")
+                        # Only set url if valid (http or https)
+                        if valid_url.startswith(('http://', 'https://')):
+                            embed.url = valid_url
+                        else:
+                            logger.info(f"Initial scan - Omitting URL for {post_title} due to invalid href: {valid_url}")
                         await channel.send(embed=embed)
-                        logger.info(f"Initial scan - Successfully sent test message for: {post_title} ({valid_url})")
+                        logger.info(f"Initial scan - Successfully sent test message for: {post_title} (modal_id: {modal_id})")
                         await asyncio.sleep(1)  # Prevent rate limiting
                     except discord.errors.Forbidden as e:
                         logger.error(f"Bot lacks permissions to send test message in channel {CHANNEL_ID}: {e}")
@@ -177,10 +183,12 @@ async def check_announcements():
                         post_title = post_link_elem.text.strip()
                         modal_id = post_link_elem.get('data-reveal-id', '')
 
-                        # Extract timestamp from the row (assuming second column)
-                        timestamp_elem = row.select_one('td:nth-child(2)')
-                        timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-                        logger.info(f"Processing announcement: {post_title}, href: {post_link}, timestamp: {timestamp}")
+                        # Skip if no modal_id
+                        if not modal_id:
+                            logger.warning(f"No modal_id found for announcement: {post_title}, skipping")
+                            continue
+
+                        logger.info(f"Processing announcement: {post_title}, href: {post_link}, modal_id: {modal_id}")
 
                         # Extract summary from modal content if available
                         modal = soup.select_one(f'#{modal_id}')
@@ -195,8 +203,8 @@ async def check_announcements():
                         valid_url = post_link
                         logger.info(f"Using URL: {valid_url} for announcement: {post_title}")
 
-                        # Create a unique identifier using timestamp and URL
-                        unique_id = f"{timestamp}:{valid_url}"
+                        # Create a unique identifier using modal_id
+                        unique_id = modal_id
                         if unique_id not in seen_announcements:
                             new_announcements.append((post_title, valid_url, summary_text))
                             seen_announcements.add(unique_id)
@@ -220,12 +228,16 @@ async def check_announcements():
                     embed = discord.Embed(
                         title=title,
                         description=f"{summary}\n\nVisit https://imi.pmf.kg.ac.rs/oglasna-tabla for details.",
-                        url=link,
                         color=discord.Color.blue()
                     )
                     embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla")
+                    # Only set url if valid (http or https)
+                    if link.startswith(('http://', 'https://')):
+                        embed.url = link
+                    else:
+                        logger.info(f"Omitting URL for {title} due to invalid href: {link}")
                     await channel.send(content=f"<@&{ROLE_ID}>", embed=embed)
-                    logger.info(f"Successfully sent notification for post: {title} ({link})")
+                    logger.info(f"Successfully sent notification for post: {title} (modal_id: {modal_id})")
                     await asyncio.sleep(1)  # Prevent rate limiting
                 except discord.errors.Forbidden as e:
                     logger.error(
@@ -241,13 +253,10 @@ async def check_announcements():
                 # Use the most recent rows from the last page processed
                 for row in rows[:10]:
                     post_link_elem = row.select_one('.naslov_oglasa a')
-                    if post_link_elem and post_link_elem.get('href'):
-                        post_link = post_link_elem.get('href')
-                        valid_url = post_link  # Use raw href
-                        timestamp_elem = row.select_one('td:nth-child(2)')
-                        timestamp = timestamp_elem.text.strip() if timestamp_elem else "No timestamp"
-                        unique_id = f"{timestamp}:{valid_url}"
-                        seen_announcements.add(unique_id)
+                    if post_link_elem:
+                        modal_id = post_link_elem.get('data-reveal-id', '')
+                        if modal_id:
+                            seen_announcements.add(modal_id)
 
         except requests.RequestException as e:
             logger.error(f"Error fetching webpage: {e}")
