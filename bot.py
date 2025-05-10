@@ -8,6 +8,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from urllib.parse import urljoin
 import time
+import random
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -37,6 +38,12 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Set to store seen announcement modal IDs
 seen_announcements = set()
 
+# User-Agent rotation for cache-busting
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Gecko/20100101 Firefox/89.0',
+    'Mozilla/5.0 (X11; Linux x86_64) Safari/537.36'
+]
 
 def create_embed(title, summary, url=None):
     """Create a Discord embed for an announcement."""
@@ -50,6 +57,74 @@ def create_embed(title, summary, url=None):
         embed.url = url
     return embed
 
+async def fetch_announcements_requests(base_url, add_to_seen=True, limit_newest=False):
+    """Fetch announcements using requests."""
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'If-Modified-Since': '0'
+    }
+    announcements = []
+    total_rows = 0
+    page_count = 0
+    current_url = base_url
+
+    while current_url:
+        page_count += 1
+        logger.info(f"Fetching page {page_count} (requests): {current_url}")
+        try:
+            response = requests.get(current_url, timeout=10, headers=headers, allow_redirects=True)
+            logger.info(f"Status: {response.status_code}, Final URL: {response.url}")
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            rows = soup.select('#oglasna_tabla_id tbody tr, table tbody tr, .oglasna-tabla tbody tr')
+            logger.info(f"Found {len(rows)} rows on page {page_count}")
+            total_rows += len(rows)
+
+            if not rows:
+                logger.warning(f"No rows found on page {page_count}")
+                logger.info(f"Raw HTML: {soup.prettify()[:1000]}")
+                break
+
+            start_idx = 1 if limit_newest and page_count == 1 else 0
+            for row in rows[start_idx:]:
+                post_link_elem = row.select_one('.naslov_oglasa a, td a')
+                if not post_link_elem:
+                    logger.warning("No post link element found in row")
+                    continue
+                post_link = post_link_elem.get('href', '')
+                post_title = post_link_elem.text.strip()
+                modal_id = post_link_elem.get('data-reveal-id', post_title)
+
+                if not modal_id:
+                    logger.warning(f"No modal_id found for announcement: {post_title}")
+                    continue
+
+                modal = soup.select_one(f'#{modal_id}, .modal-content')
+                summary_text = "No summary available."
+                if modal:
+                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date), .modal-body p')
+                    if summary_elem:
+                        summary_text = summary_elem.text.strip()[:200] + ("..." if len(summary_elem.text.strip()) > 200 else "")
+
+                unique_id = modal_id
+                if add_to_seen:
+                    seen_announcements.add(unique_id)
+                else:
+                    announcements.append((post_title, post_link, summary_text, unique_id))
+
+            next_link = soup.select_one('a.next, a[rel="next"], a.page-link, a[href*="page="], a[href*="/page/"]')
+            current_url = urljoin(base_url, next_link['href']) if next_link and next_link.get('href') else None
+
+        except requests.RequestException as e:
+            logger.error(f"Error fetching page {current_url}: {e}")
+            break
+
+    logger.info(f"Processed {total_rows} announcements across {page_count} pages")
+    return announcements, total_rows
 
 async def fetch_announcements_selenium(base_url, add_to_seen=True, limit_newest=False):
     """Fetch announcements using Selenium."""
@@ -58,13 +133,12 @@ async def fetch_announcements_selenium(base_url, add_to_seen=True, limit_newest=
     page_count = 0
     current_url = base_url
 
-    # Set up Selenium
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124')
+    options.add_argument(f'user-agent={random.choice(USER_AGENTS)}')
     options.add_argument('--disable-blink-features=AutomationControlled')
 
     try:
@@ -77,21 +151,21 @@ async def fetch_announcements_selenium(base_url, add_to_seen=True, limit_newest=
     try:
         while current_url:
             page_count += 1
-            fetch_url = current_url + f"?t={int(time.time())}"
-            logger.info(f"Fetching page {page_count}: {fetch_url}")
-            driver.get(fetch_url)
+            logger.info(f"Fetching page {page_count}: {current_url}")
+            driver.get(current_url)
 
-            # Wait for table to load
             try:
                 WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, '#oglasna_tabla_id tbody tr'))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '#oglasna_tabla_id tbody tr, table tbody tr, .oglasna-tabla tbody tr'))
                 )
             except Exception as e:
-                logger.warning(f"Table not found on {fetch_url}: {e}")
+                logger.warning(f"Table not found on {current_url}: {e}")
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+                logger.info(f"Raw HTML: {soup.prettify()[:1000]}")
                 break
 
             soup = BeautifulSoup(driver.page_source, 'html.parser')
-            rows = soup.select('#oglasna_tabla_id tbody tr')
+            rows = soup.select('#oglasna_tabla_id tbody tr, table tbody tr, .oglasna-tabla tbody tr')
             logger.info(f"Found {len(rows)} rows on page {page_count}")
             total_rows += len(rows)
 
@@ -99,25 +173,24 @@ async def fetch_announcements_selenium(base_url, add_to_seen=True, limit_newest=
                 logger.warning(f"No rows found on page {page_count}")
                 break
 
-            # Skip the newest row in initial scan
             start_idx = 1 if limit_newest and page_count == 1 else 0
             for row in rows[start_idx:]:
-                post_link_elem = row.select_one('.naslov_oglasa a')
+                post_link_elem = row.select_one('.naslov_oglasa a, td a')
                 if not post_link_elem:
                     logger.warning("No post link element found in row")
                     continue
                 post_link = post_link_elem.get('href', '')
                 post_title = post_link_elem.text.strip()
-                modal_id = post_link_elem.get('data-reveal-id', '')
+                modal_id = post_link_elem.get('data-reveal-id', post_title)
 
                 if not modal_id:
                     logger.warning(f"No modal_id found for announcement: {post_title}")
                     continue
 
-                modal = soup.select_one(f'#{modal_id}')
+                modal = soup.select_one(f'#{modal_id}, .modal-content')
                 summary_text = "No summary available."
                 if modal:
-                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
+                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date), .modal-body p')
                     if summary_elem:
                         summary_text = summary_elem.text.strip()[:200] + ("..." if len(summary_elem.text.strip()) > 200 else "")
 
@@ -139,87 +212,14 @@ async def fetch_announcements_selenium(base_url, add_to_seen=True, limit_newest=
     logger.info(f"Processed {total_rows} announcements across {page_count} pages")
     return announcements, total_rows
 
-
-async def fetch_announcements_requests(base_url, add_to_seen=True, limit_newest=False):
-    """Fallback: Fetch announcements using requests."""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-    }
-    announcements = []
-    total_rows = 0
-    page_count = 0
-    current_url = base_url
-
-    while current_url:
-        page_count += 1
-        fetch_url = current_url + f"?t={int(time.time())}"
-        logger.info(f"Fetching page {page_count} (requests): {fetch_url}")
-        try:
-            response = requests.get(fetch_url, timeout=10, headers=headers)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            rows = soup.select('#oglasna_tabla_id tbody tr')
-            logger.info(f"Found {len(rows)} rows on page {page_count}")
-            total_rows += len(rows)
-
-            if not rows:
-                logger.warning(f"No rows found on page {page_count}")
-                break
-
-            start_idx = 1 if limit_newest and page_count == 1 else 0
-            for row in rows[start_idx:]:
-                post_link_elem = row.select_one('.naslov_oglasa a')
-                if not post_link_elem:
-                    logger.warning("No post link element found in row")
-                    continue
-                post_link = post_link_elem.get('href', '')
-                post_title = post_link_elem.text.strip()
-                modal_id = post_link_elem.get('data-reveal-id', '')
-
-                if not modal_id:
-                    logger.warning(f"No modal_id found for announcement: {post_title}")
-                    continue
-
-                modal = soup.select_one(f'#{modal_id}')
-                summary_text = "No summary available."
-                if modal:
-                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date)')
-                    if summary_elem:
-                        summary_text = summary_elem.text.strip()[:200] + ("..." if len(summary_elem.text.strip()) > 200 else "")
-
-                unique_id = modal_id
-                if add_to_seen:
-                    seen_announcements.add(unique_id)
-                else:
-                    announcements.append((post_title, post_link, summary_text, unique_id))
-
-            next_link = soup.select_one('a.next, a[rel="next"], a.page-link, a[href*="page="], a[href*="/page/"]')
-            current_url = urljoin(base_url, next_link['href']) if next_link and next_link.get('href') else None
-
-        except requests.RequestException as e:
-            logger.error(f"Error fetching page {fetch_url}: {e}")
-            break
-
-    logger.info(f"Processed {total_rows} announcements across {page_count} pages")
-    return announcements, total_rows
-
-
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
-    """Fetch announcements, trying Selenium first, then requests as fallback."""
-    try:
-        announcements, total_rows = await fetch_announcements_selenium(base_url, add_to_seen, limit_newest)
-        if total_rows > 0:
-            return announcements, total_rows
-        logger.warning("Selenium found 0 rows, falling back to requests")
-    except Exception as e:
-        logger.error(f"Selenium failed: {e}, falling back to requests")
-
+    """Fetch announcements, trying requests first, then Selenium."""
     announcements, total_rows = await fetch_announcements_requests(base_url, add_to_seen, limit_newest)
+    if total_rows > 0:
+        return announcements, total_rows
+    logger.warning("Requests found 0 rows, falling back to Selenium")
+    announcements, total_rows = await fetch_announcements_selenium(base_url, add_to_seen, limit_newest)
     return announcements, total_rows
-
 
 async def scan_initial_announcements():
     """Scan existing announcements on startup without notifying."""
@@ -228,14 +228,13 @@ async def scan_initial_announcements():
         try:
             _, total_rows = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True, limit_newest=True)
             if total_rows <= 20:
-                logger.warning("Few announcements processed. Possible issue with table loading.")
-                await channel.send("Warning: Bot may not be fetching announcements correctly. Check logs.")
+                logger.warning("Few announcements processed. Possible issue with URL or table selector.")
+                await channel.send("Warning: Bot found 0 announcements. Possible wrong URL or table selector. Check logs.")
         except Exception as e:
             logger.error(f"Error in scan_initial_announcements: {e}")
             await channel.send("Error: Bot failed to scan announcements. Check logs.")
     else:
         logger.error(f"Channel with ID {CHANNEL_ID} not found")
-
 
 async def check_announcements():
     """Periodically check for new announcements and notify."""
@@ -278,7 +277,6 @@ async def check_announcements():
 
         await asyncio.sleep(300)
 
-
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
@@ -295,7 +293,6 @@ async def on_ready():
     await scan_initial_announcements()
     bot.loop.create_task(check_announcements())
 
-
 @bot.command(name='check')
 @commands.has_permissions(administrator=True)
 async def manual_check(ctx):
@@ -305,7 +302,6 @@ async def manual_check(ctx):
     await check_announcements()
     await ctx.send("Check complete!")
 
-
 @manual_check.error
 async def manual_check_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -313,7 +309,6 @@ async def manual_check_error(ctx, error):
     else:
         logger.error(f"Error in manual_check: {error}")
         await ctx.send("An error occurred while checking announcements.")
-
 
 async def main():
     try:
