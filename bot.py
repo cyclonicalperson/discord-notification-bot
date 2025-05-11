@@ -39,6 +39,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) Safari/537.36'
 ]
 
+
 def create_embed(title, summary, url=None):
     """Create a Discord embed for an announcement."""
     embed = discord.Embed(
@@ -50,6 +51,7 @@ def create_embed(title, summary, url=None):
     if url and url.startswith(('http://', 'https://')):
         embed.url = url
     return embed
+
 
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
     """Fetch announcements using requests."""
@@ -111,8 +113,9 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 if add_to_seen:
                     seen_announcements.add(unique_id)
                     logger.info(f"Added to seen: {post_title} (modal_id: {unique_id})")
-                else:
+                elif unique_id not in seen_announcements:
                     announcements.append((post_title, post_link, summary_text, unique_id))
+                    logger.info(f"Added to new announcements: {post_title} (modal_id: {unique_id})")
 
             next_link = soup.select_one('a.next, a[rel="next"], a.page-link, a[href*="page="], a[href*="/page/"]')
             current_url = urljoin(base_url, next_link['href']) if next_link and next_link.get('href') else None
@@ -123,6 +126,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
 
     logger.info(f"Processed {total_rows} announcements across {page_count} pages")
     return announcements, total_rows
+
 
 async def scan_initial_announcements():
     """Scan existing announcements on startup without notifying."""
@@ -141,6 +145,7 @@ async def scan_initial_announcements():
             await channel.send("Error: Bot failed to scan announcements. Check logs.")
     else:
         logger.error(f"Channel with ID {CHANNEL_ID} not found")
+
 
 async def check_announcements():
     """Periodically check for new announcements and notify."""
@@ -162,9 +167,6 @@ async def check_announcements():
             logger.info(f"Found {len(new_announcements)} new announcements")
 
             for title, link, summary, modal_id in reversed(new_announcements):
-                if modal_id in seen_announcements:
-                    logger.info(f"Announcement {title} (modal_id: {modal_id}) already seen, skipping")
-                    continue
                 seen_announcements.add(modal_id)
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
@@ -188,6 +190,7 @@ async def check_announcements():
 
         await asyncio.sleep(300)
 
+
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
@@ -205,6 +208,7 @@ async def on_ready():
     # Start periodic checks after initial scan
     bot.loop.create_task(check_announcements())
 
+
 @bot.command(name='check')
 @commands.has_permissions(administrator=True)
 async def manual_check(ctx):
@@ -214,6 +218,7 @@ async def manual_check(ctx):
     await check_announcements()
     await ctx.send("Check complete!")
 
+
 @manual_check.error
 async def manual_check_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -221,6 +226,7 @@ async def manual_check_error(ctx, error):
     else:
         logger.error(f"Error in manual_check: {error}")
         await ctx.send("An error occurred while checking announcements.")
+
 
 async def main():
     try:
