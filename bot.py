@@ -40,11 +40,11 @@ USER_AGENTS = [
 ]
 
 
-def create_embed(title, summary, url=None):
+def create_embed(title, url=None):
     """Create a Discord embed for an announcement."""
     embed = discord.Embed(
         title=title,
-        description=f"{summary}\n\nVisit https://imi.pmf.kg.ac.rs/oglasna-tabla for details.",
+        description="Visit https://imi.pmf.kg.ac.rs/oglasna-tabla for details.",
         color=discord.Color.blue()
     )
     embed.set_footer(text="IMI PMF Kragujevac - Oglasna Tabla")
