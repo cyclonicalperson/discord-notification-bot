@@ -106,7 +106,9 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 summary_text = "No summary available."
                 if modal:
                     summary_elems = modal.select('p:not(.lead):not(.news_title_date), .modal-body p')
-                    summary_text = '\n\n'.join([p.text.strip() for p in summary_elems if p.text.strip()])
+                    # Deduplicate and filter out empty strings, join with single newline
+                    unique_texts = list(dict.fromkeys(p.text.strip() for p in summary_elems if p.text.strip()))
+                    summary_text = '\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
                 if add_to_seen:
@@ -134,11 +136,13 @@ async def scan_initial_announcements():
         try:
             seen_announcements.clear()  # Clear to avoid stale data
             logger.info(f"Before scan: seen_announcements size = {len(seen_announcements)}")
-            _, total_rows = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True, limit_newest=False)
+            _, total_rows = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True,
+                                                      limit_newest=False)
             logger.info(f"After scan: seen_announcements size = {len(seen_announcements)}")
             if total_rows <= 20:
                 logger.warning("Few announcements processed. Possible issue with URL or table selector.")
-                await channel.send("Warning: Bot found 0 announcements. Possible wrong URL or table selector. Check logs.")
+                await channel.send(
+                    "Warning: Bot found 0 announcements. Possible wrong URL or table selector. Check logs.")
         except Exception as e:
             logger.error(f"Error in scan_initial_announcements: {e}")
             await channel.send("Error: Bot failed to scan announcements. Check logs.")
@@ -236,6 +240,7 @@ async def main():
         logger.error(f"Bot crashed: {e}")
         await asyncio.sleep(5)
         await main()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
