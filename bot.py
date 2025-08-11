@@ -105,9 +105,8 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 modal = soup.select_one(f'#{modal_id}, .modal-content')
                 summary_text = "No summary available."
                 if modal:
-                    summary_elem = modal.select_one('p:not(.lead):not(.news_title_date), .modal-body p')
-                    if summary_elem:
-                        summary_text = summary_elem.text.strip()[:200] + ("..." if len(summary_elem.text.strip()) > 200 else "")
+                    summary_elems = modal.select('p:not(.lead):not(.news_title_date), .modal-body p')
+                    summary_text = '\n\n'.join([p.text.strip() for p in summary_elems if p.text.strip()])
 
                 unique_id = modal_id
                 if add_to_seen:
@@ -171,7 +170,7 @@ async def check_announcements():
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
                     embed = create_embed(title, summary, link)
-                    await channel.send(content=f"<@&{ROLE_ID}>", embed=embed)
+                    await channel.send(content=f"<@&{ROLE_ID}> **{title}**\n{summary}", embed=embed)
                     logger.info(f"Sent notification for: {title} (modal_id: {modal_id})")
                     await asyncio.sleep(1)
                 except discord.errors.Forbidden:
