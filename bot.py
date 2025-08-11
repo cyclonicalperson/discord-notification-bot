@@ -181,7 +181,7 @@ async def check_announcements():
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
                     embed = create_embed(title, link)
-                    await channel.send(content=f"<@&{ROLE_ID}> **{title}**\n{summary}", embed=embed)
+                    await channel.send(content=f"<@&{ROLE_ID}> **{title}**\n{summary}\n", embed=embed)
                     logger.info(f"Sent notification for: {title} (modal_id: {modal_id})")
                     await asyncio.sleep(1)
                 except discord.errors.Forbidden:
