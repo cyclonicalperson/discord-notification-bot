@@ -103,12 +103,19 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     logger.warning(f"No modal_id found for announcement: {post_title}")
                     continue
 
-                modal = soup.select_one(f'#{modal_id}, .modal-content')
+                modal = soup.select_one(f'#{modal_id}')
                 summary_text = "No summary available."
                 if modal:
                     summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
-                    summary_text = '\n'.join(
-                        [p.text.strip() for p in summary_elems if p.text.strip()]) or "No summary available."
+                    # Collect unique paragraph texts, preserving original whitespace
+                    seen_texts = set()
+                    unique_texts = []
+                    for p in summary_elems:
+                        text = p.get_text(strip=False)
+                        if text and text not in seen_texts:
+                            seen_texts.add(text)
+                            unique_texts.append(text)
+                    summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
                 if add_to_seen:
@@ -173,7 +180,7 @@ async def check_announcements():
                 seen_announcements.add(modal_id)
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
-                    embed = create_embed(title, summary, link)
+                    embed = create_embed(title, link)
                     await channel.send(content=f"<@&{ROLE_ID}> **{title}**\n{summary}", embed=embed)
                     logger.info(f"Sent notification for: {title} (modal_id: {modal_id})")
                     await asyncio.sleep(1)
