@@ -87,7 +87,8 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
 
             start_idx = 1 if limit_newest and page_count == 1 else 0
             if limit_newest and page_count == 1 and rows:
-                logger.info(f"Skipping first row: {rows[0].select_one('.naslov_oglasa a, td a').text.strip() if rows[0].select_one('.naslov_oglasa a, td a') else 'None'}")
+                logger.info(
+                    f"Skipping first row: {rows[0].select_one('.naslov_oglasa a, td a').text.strip() if rows[0].select_one('.naslov_oglasa a, td a') else 'None'}")
 
             for row in rows[start_idx:]:
                 post_link_elem = row.select_one('.naslov_oglasa a, td a')
@@ -105,10 +106,9 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 modal = soup.select_one(f'#{modal_id}, .modal-content')
                 summary_text = "No summary available."
                 if modal:
-                    summary_elems = modal.select('p:not(.lead):not(.news_title_date), .modal-body p')
-                    # Deduplicate and filter out empty strings, join with single newline
-                    unique_texts = list(dict.fromkeys(p.text.strip() for p in summary_elems if p.text.strip()))
-                    summary_text = '\n'.join(unique_texts) if unique_texts else "No summary available."
+                    summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
+                    summary_text = '\n'.join(
+                        [p.text.strip() for p in summary_elems if p.text.strip()]) or "No summary available."
 
                 unique_id = modal_id
                 if add_to_seen:
