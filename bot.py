@@ -238,6 +238,29 @@ async def manual_check_error(ctx, error):
         await ctx.send("An error occurred while checking announcements.")
 
 
+@bot.command(name='debug_reread')
+@commands.has_permissions(administrator=True)
+async def debug_reread(ctx):
+    """Temporarily re-read the last announcement for testing."""
+    logger.info(f"Debug reread triggered by {ctx.author}")
+    if seen_announcements:
+        # Remove the most recent modal_id to reprocess it
+        seen_announcements.pop()
+        logger.info("Removed last seen announcement for reprocessing")
+    await ctx.send("Re-reading the last announcement...")
+    await check_announcements()
+    await ctx.send("Reread complete!")
+
+
+@debug_reread.error
+async def debug_reread_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You need administrator permissions to use this command.")
+    else:
+        logger.error(f"Error in debug_reread: {error}")
+        await ctx.send("An error occurred while re-reading the announcement.")
+
+
 async def main():
     try:
         await bot.start(TOKEN)
