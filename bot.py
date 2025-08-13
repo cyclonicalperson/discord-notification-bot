@@ -1,13 +1,13 @@
-import discord
-import asyncio
-from bs4 import BeautifulSoup
 import os
 import logging
+import discord
+import asyncio
 import requests
+import random
 from discord.ext import commands
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from urllib.parse import urljoin
-import random
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -107,14 +107,14 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 summary_text = "No summary available."
                 if modal:
                     summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
-                    # Collect unique paragraph texts, preserving original whitespace
+                    # Collect unique paragraph texts, normalizing whitespace for comparison
                     seen_texts = set()
                     unique_texts = []
                     for p in summary_elems:
-                        text = p.get_text(strip=False)
+                        text = ' '.join(p.get_text(strip=False).split())  # Normalize whitespace
                         if text and text not in seen_texts:
                             seen_texts.add(text)
-                            unique_texts.append(text)
+                            unique_texts.append(p.get_text(strip=False))  # Keep original formatting
                     summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
