@@ -1,9 +1,11 @@
 import os
+import json
 import logging
 import discord
 import asyncio
 import requests
 import random
+import re
 from discord.ext import commands
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -82,7 +84,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
 
             if not rows:
                 logger.warning(f"No rows found on page {page_count}")
-                logger.info(f"Raw HTML: {soup.prettify()[:1000]}")
+                logger.debug(f"Raw HTML (first 1000 chars): {soup.prettify()[:1000]}")
                 break
 
             start_idx = 1 if limit_newest and page_count == 1 else 0
@@ -106,15 +108,26 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 modal = soup.select_one(f'#{modal_id}')
                 summary_text = "No summary available."
                 if modal:
-                    summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
-                    # Collect unique paragraph texts, normalizing whitespace for comparison
+                    # Select top-level <p> elements, excluding specific classes
+                    summary_elems = modal.select('div.modal > p:not(.lead):not(.news_title_date)')
+                    # Log number of <p> elements for debugging
+                    logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
+                    # Log raw modal HTML if duplicates are suspected
+                    if len(summary_elems) > 0:
+                        logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
+                    # Collect unique paragraph texts
                     seen_texts = set()
                     unique_texts = []
                     for p in summary_elems:
-                        text = ' '.join(p.get_text(strip=False).split())  # Normalize whitespace
-                        if text and text not in seen_texts:
-                            seen_texts.add(text)
-                            unique_texts.append(p.get_text(strip=False))  # Keep original formatting
+                        # Get raw text, strip HTML tags, and normalize for comparison
+                        raw_text = p.get_text(strip=False)
+                        # Normalize: remove non-visible chars, extra spaces, and convert to lowercase
+                        normalized_text = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', raw_text)).strip().lower()
+                        if normalized_text and normalized_text not in seen_texts:
+                            seen_texts.add(normalized_text)
+                            unique_texts.append(raw_text)  # Preserve original formatting
+                        elif normalized_text:
+                            logger.debug(f"Duplicate text found in {post_title}: {normalized_text[:100]}")
                     summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
