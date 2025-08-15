@@ -1,9 +1,11 @@
 import os
+import json
 import logging
 import discord
 import asyncio
 import requests
 import random
+import re
 from discord.ext import commands
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -67,6 +69,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
     total_rows = 0
     page_count = 0
     current_url = base_url
+    cycle_seen_ids = set()  # Track modal_ids in this fetch cycle to prevent duplicates
 
     while current_url:
         page_count += 1
@@ -82,7 +85,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
 
             if not rows:
                 logger.warning(f"No rows found on page {page_count}")
-                logger.info(f"Raw HTML: {soup.prettify()[:1000]}")
+                logger.debug(f"Raw HTML (first 1000 chars): {soup.prettify()[:1000]}")
                 break
 
             start_idx = 1 if limit_newest and page_count == 1 else 0
@@ -103,21 +106,54 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     logger.warning(f"No modal_id found for announcement: {post_title}")
                     continue
 
+                # Skip if modal_id was already processed in this cycle
+                if modal_id in cycle_seen_ids:
+                    logger.debug(f"Skipping duplicate modal_id in cycle: {modal_id} for {post_title}")
+                    continue
+
+                # Skip if already seen globally and not adding to seen
+                if not add_to_seen and modal_id in seen_announcements:
+                    continue
+
                 modal = soup.select_one(f'#{modal_id}')
                 summary_text = "No summary available."
                 if modal:
+                    # Get all text content from the modal, excluding title and date elements
                     summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
-                    # Collect unique paragraph texts, normalizing whitespace for comparison
-                    seen_texts = set()
-                    unique_texts = []
+                    logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
+                    if summary_elems:
+                        logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
+
+                    # Extract all text and split into lines for better deduplication
+                    all_text_lines = []
                     for p in summary_elems:
-                        text = ' '.join(p.get_text(strip=False).split())  # Normalize whitespace
-                        if text and text not in seen_texts:
-                            seen_texts.add(text)
-                            unique_texts.append(p.get_text(strip=False))  # Keep original formatting
-                    summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
+                        raw_text = p.get_text(strip=True)
+                        if raw_text:
+                            # Split by common separators and add each line
+                            lines = re.split(r'[\n\r]+', raw_text)
+                            for line in lines:
+                                line = line.strip()
+                                if line:
+                                    all_text_lines.append(line)
+
+                    # Remove duplicates while preserving order
+                    seen_normalized = set()
+                    unique_lines = []
+                    for line in all_text_lines:
+                        # More aggressive normalization for duplicate detection
+                        normalized = re.sub(r'[^\w\s]', '', line).strip().lower()
+                        normalized = re.sub(r'\s+', ' ', normalized)
+
+                        if normalized and normalized not in seen_normalized:
+                            seen_normalized.add(normalized)
+                            unique_lines.append(line)
+                        else:
+                            logger.debug(f"Skipping duplicate line in {post_title}: {line[:50]}...")
+
+                    summary_text = '\n'.join(unique_lines) if unique_lines else "No summary available."
 
                 unique_id = modal_id
+                cycle_seen_ids.add(unique_id)  # Mark as seen in this cycle
                 if add_to_seen:
                     seen_announcements.add(unique_id)
                     logger.info(f"Added to seen: {post_title} (modal_id: {unique_id})")
@@ -180,8 +216,15 @@ async def check_announcements():
                 seen_announcements.add(modal_id)
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
+                    # Create embed with hardcoded description
                     embed = create_embed(title, link)
-                    await channel.send(content=f"<@&{ROLE_ID}> **{title}**\n{summary}\n", embed=embed)
+
+                    # Send message with role mention, title, and summary in content only
+                    message_content = f"<@&{ROLE_ID}> **{title}**"
+                    if summary and summary.strip() and summary != "No summary available.":
+                        message_content += f"\n{summary}"
+
+                    await channel.send(content=message_content, embed=embed)
                     logger.info(f"Sent notification for: {title} (modal_id: {modal_id})")
                     await asyncio.sleep(1)
                 except discord.errors.Forbidden:
