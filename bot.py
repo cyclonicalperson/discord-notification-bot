@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 import discord
 import asyncio
@@ -222,7 +221,7 @@ async def check_announcements():
                     # Send message with role mention, title, and summary in content only
                     message_content = f"<@&{ROLE_ID}> **{title}**"
                     if summary and summary.strip() and summary != "No summary available.":
-                        message_content += f"\n{summary}"
+                        message_content += f"\n\n{summary}"
 
                     await channel.send(content=message_content, embed=embed)
                     logger.info(f"Sent notification for: {title} (modal_id: {modal_id})")
