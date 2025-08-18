@@ -5,6 +5,8 @@ import asyncio
 import requests
 import random
 import re
+
+import unicodedata
 from discord.ext import commands
 from bs4 import BeautifulSoup
 from bs4 import NavigableString
@@ -128,16 +130,15 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     for p in summary_elems:
                         # Work on a copy to preserve original structure
                         p_copy = p.__copy__()
-                        # Check for existing markdown links [text](url) before processing <a> tags
+                        # Check for existing markdown links [text](url)
                         raw_text = p_copy.get_text(strip=False)
                         markdown_link_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
                         existing_markdown_links = re.findall(markdown_link_pattern, raw_text)
-                        for link_text, link_url in existing_markdown_links:
-                            placeholder = f"__MD_LINK_{len(existing_markdown_links)}__"
+                        for i, (link_text, link_url) in enumerate(existing_markdown_links):
+                            placeholder = f"__MD_LINK_{i}__"
                             raw_text = raw_text.replace(f"[{link_text}]({link_url})", placeholder)
                             p_copy = BeautifulSoup(raw_text, 'html.parser')
-                            raw_text = p_copy.get_text(strip=False)
-                        # Process <a> tags for remaining links
+                        # Process <a> tags for links
                         for a in p_copy.find_all('a'):
                             link_text = a.get_text(strip=False).strip()
                             link_url = urljoin(base_url, a.get('href', ''))
@@ -150,8 +151,12 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                         raw_text = p_copy.get_text(strip=False).strip()
                         for i, (link_text, link_url) in enumerate(existing_markdown_links):
                             raw_text = raw_text.replace(f"__MD_LINK_{i}__", f"[{link_text}]({link_url})")
-                        # Normalize for comparison: remove non-word chars, extra spaces, lowercase
-                        normalized_text = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', raw_text)).strip().lower()
+                        # Normalize for comparison: aggressive Unicode normalization and cleanup
+                        normalized_text = unicodedata.normalize('NFKD', raw_text)  # Normalize Unicode
+                        normalized_text = re.sub(r'[^\w\s]', '', normalized_text)  # Remove non-word chars
+                        normalized_text = re.sub(r'\s+', ' ', normalized_text).strip().lower()  # Collapse spaces
+                        logger.debug(f"Raw text for {post_title}: {raw_text[:100]}")
+                        logger.debug(f"Normalized text for {post_title}: {normalized_text[:100]}")
                         if normalized_text and normalized_text not in seen_texts:
                             seen_texts.add(normalized_text)
                             unique_texts.append(raw_text)
