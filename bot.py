@@ -138,7 +138,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             link_url = urljoin(base_url, a.get('href', ''))
                             # Encode URL to handle spaces and special characters
                             link_url = urllib.parse.quote(link_url, safe=':/?=&')
-                            a.replace_with(NavigableString(f"<{link_url}|{link_text}>"))
+                            a.replace_with(NavigableString(f"[{link_text}]({link_url})"))
                         # Process <strong> and <b> tags for bold
                         for bold in p_copy.find_all(['strong', 'b']):
                             bold_text = bold.get_text(strip=False).strip()
