@@ -1,5 +1,7 @@
 import os
 import logging
+import urllib
+
 import discord
 import asyncio
 import requests
@@ -130,27 +132,18 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     for p in summary_elems:
                         # Work on a copy to preserve original structure
                         p_copy = p.__copy__()
-                        # Check for existing markdown links [text](url)
-                        raw_text = p_copy.get_text(strip=False)
-                        markdown_link_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
-                        existing_markdown_links = re.findall(markdown_link_pattern, raw_text)
-                        for i, (link_text, link_url) in enumerate(existing_markdown_links):
-                            placeholder = f"__MD_LINK_{i}__"
-                            raw_text = raw_text.replace(f"[{link_text}]({link_url})", placeholder)
-                            p_copy = BeautifulSoup(raw_text, 'html.parser')
-                        # Process <a> tags for links
+                        # Process <a> tags for clickable links
                         for a in p_copy.find_all('a'):
                             link_text = a.get_text(strip=False).strip()
                             link_url = urljoin(base_url, a.get('href', ''))
-                            a.replace_with(NavigableString(f"[{link_text}]({link_url})"))
+                            # Encode URL to handle spaces and special characters
+                            link_url = urllib.parse.quote(link_url, safe=':/?=&')
+                            a.replace_with(NavigableString(f"<{link_url}|{link_text}>"))
                         # Process <strong> and <b> tags for bold
                         for bold in p_copy.find_all(['strong', 'b']):
                             bold_text = bold.get_text(strip=False).strip()
                             bold.replace_with(NavigableString(f"**{bold_text}**"))
-                        # Restore existing markdown links
                         raw_text = p_copy.get_text(strip=False).strip()
-                        for i, (link_text, link_url) in enumerate(existing_markdown_links):
-                            raw_text = raw_text.replace(f"__MD_LINK_{i}__", f"[{link_text}]({link_url})")
                         # Normalize for comparison: aggressive Unicode normalization and cleanup
                         normalized_text = unicodedata.normalize('NFKD', raw_text)  # Normalize Unicode
                         normalized_text = re.sub(r'[^\w\s]', '', normalized_text)  # Remove non-word chars
