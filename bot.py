@@ -73,13 +73,34 @@ def transliterate_serbian(text):
     return ''.join(mapping.get(c, c) for c in text)
 
 
-def normalize_whitespace(text):
-    """Normalize all forms of whitespace to a single space and strip leading/trailing spaces."""
+def normalize_whitespace_and_clean(text):
+    """Normalize whitespace and clean text in a single pass."""
+    if not text or not text.strip():
+        return ""
+
     # Replace all Unicode whitespace characters with a single space
     text = ''.join(' ' if unicodedata.category(c).startswith('Z') else c for c in text)
-    # Replace multiple spaces with a single space
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    # Replace multiple spaces with a single space and strip
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def create_dedup_key(text):
+    """Create a consistent deduplication key from text."""
+    if not text:
+        return ""
+
+    # First normalize whitespace
+    normalized = normalize_whitespace_and_clean(text)
+
+    # Convert to lowercase and transliterate
+    translit = transliterate_serbian(normalized.lower())
+
+    # Remove punctuation and extra spaces for comparison
+    clean_key = re.sub(r'[^\w\s]', ' ', translit)
+    clean_key = re.sub(r'\s+', ' ', clean_key).strip()
+
+    return clean_key
 
 
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
@@ -144,42 +165,67 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
 
                 modal = soup.select_one(f'#{modal_id}')
                 summary_text = "No summary available."
+
                 if modal:
                     # Get all text content from the modal, excluding title and date elements
                     summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
                     logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
+
                     if summary_elems:
                         logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
-                    seen_texts = set()
+
+                    # Use a more robust deduplication approach
+                    seen_keys = set()
                     unique_texts = []
+
                     for p in summary_elems:
                         # Work on a copy to preserve original structure
                         p_copy = p.__copy__()
+
                         # Process <a> tags for links
                         for a in p_copy.find_all('a'):
-                            link_text = a.get_text(strip=False).strip()
-                            link_url = urljoin(base_url, a.get('href', ''))
-                            # URL-encode the link to fix broken links with spaces or special chars
-                            encoded_link_url = quote(link_url, safe=':/?=&%')
-                            a.replace_with(NavigableString(f"[{link_text}]({encoded_link_url})"))
+                            link_text = a.get_text(strip=True).strip()
+                            if link_text:  # Only process non-empty links
+                                link_url = urljoin(base_url, a.get('href', ''))
+                                # URL-encode the link to fix broken links with spaces or special chars
+                                encoded_link_url = quote(link_url, safe=':/?=&%')
+                                a.replace_with(NavigableString(f"[{link_text}]({encoded_link_url})"))
+                            else:
+                                a.extract()  # Remove empty links
+
                         # Process <strong> and <b> tags for bold
                         for bold in p_copy.find_all(['strong', 'b']):
-                            bold_text = bold.get_text(strip=False).strip()
-                            bold.replace_with(NavigableString(f"**{bold_text}**"))
-                        raw_text = p_copy.get_text(strip=False).strip()
-                        # Normalize whitespace early to catch all variations
-                        normalized_raw = normalize_whitespace(raw_text)
-                        # Normalize with transliteration for deduplication
-                        translit_text = transliterate_serbian(normalized_raw.lower())
-                        normalized_text = re.sub(r'[^\w\s]', '', translit_text).strip()
+                            bold_text = bold.get_text(strip=True).strip()
+                            if bold_text:  # Only process non-empty bold text
+                                bold.replace_with(NavigableString(f"**{bold_text}**"))
+                            else:
+                                bold.extract()  # Remove empty bold tags
+
+                        # Get the processed text
+                        raw_text = p_copy.get_text(strip=False)
+
+                        # Normalize whitespace once
+                        clean_text = normalize_whitespace_and_clean(raw_text)
+
+                        # Skip empty paragraphs
+                        if not clean_text:
+                            continue
+
+                        # Create deduplication key
+                        dedup_key = create_dedup_key(clean_text)
+
                         # Log both raw and normalized for debugging
-                        logger.debug(f"Raw text: {raw_text[:100]}")
-                        logger.debug(f"Normalized text: {normalized_text[:100]}")
-                        if normalized_text and normalized_text not in seen_texts:
-                            seen_texts.add(normalized_text)
-                            unique_texts.append(raw_text)
-                        elif normalized_text:
-                            logger.debug(f"Duplicate text found in {post_title}: {normalized_text[:100]}")
+                        logger.debug(f"Clean text: {clean_text[:100]}")
+                        logger.debug(f"Dedup key: {dedup_key[:100]}")
+
+                        # Check for duplicates using the dedup key
+                        if dedup_key and dedup_key not in seen_keys:
+                            seen_keys.add(dedup_key)
+                            unique_texts.append(clean_text)
+                        elif dedup_key:
+                            logger.debug(f"Duplicate text found in {post_title}: {dedup_key[:100]}")
+
+                    # Join unique texts with double newlines
                     summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
