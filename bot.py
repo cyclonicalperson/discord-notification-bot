@@ -9,7 +9,7 @@ from discord.ext import commands
 from bs4 import BeautifulSoup
 from bs4 import NavigableString
 from dotenv import load_dotenv
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -146,7 +146,9 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                         for a in p_copy.find_all('a'):
                             link_text = a.get_text(strip=False).strip()
                             link_url = urljoin(base_url, a.get('href', ''))
-                            a.replace_with(NavigableString(f"[{link_text}]({link_url})"))
+                            # URL-encode the link to fix broken links with spaces or special chars
+                            encoded_link_url = quote(link_url, safe=':/?=&%')
+                            a.replace_with(NavigableString(f"[{link_text}]({encoded_link_url})"))
                         # Process <strong> and <b> tags for bold
                         for bold in p_copy.find_all(['strong', 'b']):
                             bold_text = bold.get_text(strip=False).strip()
