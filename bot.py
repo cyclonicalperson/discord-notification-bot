@@ -182,7 +182,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     # Get all content from the modal - be more inclusive with selectors
                     # Look for paragraphs, divs, lists, and any text content
                     summary_elems = modal.select(
-                        'p:not(.lead):not(.news_title_date), div:not(.modal-header):not(.close-reveal-modal), ul, ol, li')
+                        'p:not(.lead):not(.news_title_date), div:not(.modal-header):not(.close-reveal-modal):not(.share-links), ul, ol, li')
 
                     # If no structured elements found, get any direct text content from the modal
                     if not summary_elems:
@@ -191,11 +191,18 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                         if modal_text:
                             # Split by lines and process as individual elements
                             lines = [line.strip() for line in modal_text.split('\n') if line.strip()]
-                            # Filter out title/header lines (usually short and at the beginning)
+                            # Filter out title/header lines and common elements like "Podeli"
                             content_lines = []
                             for line in lines:
-                                # Skip very short lines, or lines that look like titles/headers
-                                if len(line) > 20 and not line.endswith(':') and '©' not in line:
+                                # Skip very short lines, titles/headers, share links, and common UI elements
+                                if (len(line) > 20 and
+                                        not line.endswith(':') and
+                                        '©' not in line and
+                                        'podeli' not in line.lower() and
+                                        'share' not in line.lower() and
+                                        'facebook' not in line.lower() and
+                                        'twitter' not in line.lower() and
+                                        not line.startswith('×')):
                                     content_lines.append(line)
                             if content_lines:
                                 summary_text = '\n\n'.join(content_lines)
@@ -219,17 +226,34 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             if elem.name == 'li' and elem.find_parent(['ul', 'ol']) in summary_elems:
                                 continue
 
+                            # Skip elements that contain share/social media links
+                            elem_text = elem.get_text().lower()
+                            if ('podeli' in elem_text or 'share' in elem_text or
+                                    'facebook' in elem_text or 'twitter' in elem_text or
+                                    elem_text.strip().startswith('×')):
+                                continue
+
                             # Work on a copy to preserve original structure
                             elem_copy = elem.__copy__()
 
-                            # Process <a> tags for links
+                            # Process <a> tags for links, but skip social/share links
                             for a in elem_copy.find_all('a'):
-                                link_text = a.get_text(strip=True).strip()
-                                if link_text:  # Only process non-empty links
+                                link_text = a.get_text(strip=True).strip().lower()
+                                link_href = a.get('href', '').lower()
+
+                                # Skip share/social media links
+                                if ('podeli' in link_text or 'share' in link_text or
+                                        'facebook' in link_text or 'twitter' in link_text or
+                                        'facebook' in link_href or 'twitter' in link_href or
+                                        'instagram' in link_href or 'linkedin' in link_href):
+                                    a.extract()  # Remove share links entirely
+                                    continue
+
+                                if link_text:  # Only process non-empty, non-share links
                                     link_url = urljoin(base_url, a.get('href', ''))
                                     # URL-encode the link to fix broken links with spaces or special chars
                                     encoded_link_url = quote(link_url, safe=':/?=&%')
-                                    a.replace_with(NavigableString(f"[{link_text}]({encoded_link_url})"))
+                                    a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({encoded_link_url})"))
                                 else:
                                     a.extract()  # Remove empty links
 
@@ -248,6 +272,9 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                     formatted_items = []
                                     for li in list_items:
                                         li_text = li.get_text()
+                                        # Skip list items that are share links
+                                        if 'podeli' in li_text.lower() or 'share' in li_text.lower():
+                                            continue
                                         # Only do minimal cleaning on list items
                                         li_text = normalize_whitespace_and_clean(li_text)
                                         if li_text:
