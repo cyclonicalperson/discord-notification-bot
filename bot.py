@@ -7,6 +7,7 @@ import random
 import re
 from discord.ext import commands
 from bs4 import BeautifulSoup
+from bs4 import NavigableString
 from dotenv import load_dotenv
 from urllib.parse import urljoin
 
@@ -122,34 +123,29 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
                     if summary_elems:
                         logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
-
-                    # Extract all text and split into lines for better deduplication
-                    all_text_lines = []
+                    seen_texts = set()
+                    unique_texts = []
                     for p in summary_elems:
-                        raw_text = p.get_text(strip=True)
-                        if raw_text:
-                            # Split by common separators and add each line
-                            lines = re.split(r'[\n\r]+', raw_text)
-                            for line in lines:
-                                line = line.strip()
-                                if line:
-                                    all_text_lines.append(line)
-
-                    # Remove duplicates while preserving order
-                    seen_normalized = set()
-                    unique_lines = []
-                    for line in all_text_lines:
-                        # More aggressive normalization for duplicate detection
-                        normalized = re.sub(r'[^\w\s]', '', line).strip().lower()
-                        normalized = re.sub(r'\s+', ' ', normalized)
-
-                        if normalized and normalized not in seen_normalized:
-                            seen_normalized.add(normalized)
-                            unique_lines.append(line)
-                        else:
-                            logger.debug(f"Skipping duplicate line in {post_title}: {line[:50]}...")
-
-                    summary_text = '\n'.join(unique_lines) if unique_lines else "No summary available."
+                        # Work on a copy to preserve original structure
+                        p_copy = p.__copy__()
+                        # Process <a> tags for links
+                        for a in p_copy.find_all('a'):
+                            link_text = a.get_text(strip=False).strip()
+                            link_url = urljoin(base_url, a.get('href', ''))
+                            a.replace_with(NavigableString(f"[{link_text}]({link_url})"))
+                        # Process <strong> and <b> tags for bold
+                        for bold in p_copy.find_all(['strong', 'b']):
+                            bold_text = bold.get_text(strip=False).strip()
+                            bold.replace_with(NavigableString(f"**{bold_text}**"))
+                        raw_text = p_copy.get_text(strip=False).strip()
+                        # Normalize for comparison: remove non-word chars, extra spaces, lowercase
+                        normalized_text = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', raw_text)).strip().lower()
+                        if normalized_text and normalized_text not in seen_texts:
+                            seen_texts.add(normalized_text)
+                            unique_texts.append(raw_text)
+                        elif normalized_text:
+                            logger.debug(f"Duplicate text found in {post_title}: {normalized_text[:100]}")
+                    summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
                 cycle_seen_ids.add(unique_id)  # Mark as seen in this cycle
