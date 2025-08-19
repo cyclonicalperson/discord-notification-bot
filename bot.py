@@ -55,6 +55,20 @@ def create_embed(title, url=None):
     return embed
 
 
+def transliterate_serbian(text):
+    """Transliterate Serbian Cyrillic to Latin for normalization."""
+    mapping = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'ђ': 'dj', 'е': 'e', 'ж': 'z', 'з': 'z', 'и': 'i',
+        'ј': 'j', 'к': 'k', 'л': 'l', 'љ': 'lj', 'м': 'm', 'н': 'n', 'њ': 'nj', 'о': 'o', 'п': 'p', 'р': 'r',
+        'с': 's', 'т': 't', 'ћ': 'c', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'c', 'џ': 'dz', 'ш': 's',
+        # Uppercase (though we lower() before calling this)
+        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Ђ': 'Dj', 'Е': 'E', 'Ж': 'Z', 'З': 'Z', 'И': 'I',
+        'Ј': 'J', 'К': 'K', 'Л': 'L', 'Љ': 'Lj', 'М': 'M', 'Н': 'N', 'Њ': 'Nj', 'О': 'O', 'П': 'P', 'Р': 'R',
+        'С': 'S', 'Т': 'T', 'Ћ': 'C', 'У': 'U', 'Ф': 'F', 'Х': 'H', 'Ц': 'C', 'Ч': 'C', 'Џ': 'Dz', 'Ш': 'S',
+    }
+    return ''.join(mapping.get(c, c) for c in text)
+
+
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
     """Fetch announcements using requests."""
     headers = {
@@ -138,8 +152,9 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             bold_text = bold.get_text(strip=False).strip()
                             bold.replace_with(NavigableString(f"**{bold_text}**"))
                         raw_text = p_copy.get_text(strip=False).strip()
-                        # Normalize for comparison: remove non-word chars, extra spaces, lowercase
-                        normalized_text = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', raw_text)).strip().lower()
+                        # Normalize with transliteration for better deduplication across scripts
+                        translit_text = transliterate_serbian(raw_text.lower())
+                        normalized_text = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', translit_text)).strip()
                         if normalized_text and normalized_text not in seen_texts:
                             seen_texts.add(normalized_text)
                             unique_texts.append(raw_text)
