@@ -106,7 +106,7 @@ def create_dedup_key(text):
     translit = transliterate_serbian(text.lower())
 
     # Remove all punctuation, whitespace, and formatting for comparison
-    clean_key = re.sub(r'\W', '', translit)  # Remove everything except word characters
+    clean_key = re.sub(r'[^\w]', '', translit)  # Remove everything except word characters
 
     # Further normalize common patterns in Serbian academic announcements
     clean_key = re.sub(r'(daje|ostatak|broj|indeksa|ucionici|ucionnica|kolokvijum|poceti)', '', clean_key)
