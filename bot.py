@@ -5,6 +5,7 @@ import asyncio
 import requests
 import random
 import re
+import unicodedata
 from discord.ext import commands
 from bs4 import BeautifulSoup
 from bs4 import NavigableString
@@ -56,17 +57,29 @@ def create_embed(title, url=None):
 
 
 def transliterate_serbian(text):
-    """Transliterate Serbian Cyrillic to Latin for normalization."""
+    """Transliterate Serbian Cyrillic and Latin diacritics to basic Latin for normalization."""
     mapping = {
+        # Cyrillic
         'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'ђ': 'dj', 'е': 'e', 'ж': 'z', 'з': 'z', 'и': 'i',
         'ј': 'j', 'к': 'k', 'л': 'l', 'љ': 'lj', 'м': 'm', 'н': 'n', 'њ': 'nj', 'о': 'o', 'п': 'p', 'р': 'r',
         'с': 's', 'т': 't', 'ћ': 'c', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'c', 'џ': 'dz', 'ш': 's',
-        # Uppercase (though we lower() before calling this)
         'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Ђ': 'Dj', 'Е': 'E', 'Ж': 'Z', 'З': 'Z', 'И': 'I',
         'Ј': 'J', 'К': 'K', 'Л': 'L', 'Љ': 'Lj', 'М': 'M', 'Н': 'N', 'Њ': 'Nj', 'О': 'O', 'П': 'P', 'Р': 'R',
         'С': 'S', 'Т': 'T', 'Ћ': 'C', 'У': 'U', 'Ф': 'F', 'Х': 'H', 'Ц': 'C', 'Ч': 'C', 'Џ': 'Dz', 'Ш': 'S',
+        # Latin diacritics
+        'č': 'c', 'ć': 'c', 'đ': 'dj', 'š': 's', 'ž': 'z',
+        'Č': 'C', 'Ć': 'C', 'Đ': 'Dj', 'Š': 'S', 'Ž': 'Z',
     }
     return ''.join(mapping.get(c, c) for c in text)
+
+
+def normalize_whitespace(text):
+    """Normalize all forms of whitespace to a single space and strip leading/trailing spaces."""
+    # Replace all Unicode whitespace characters with a single space
+    text = ''.join(' ' if unicodedata.category(c).startswith('Z') else c for c in text)
+    # Replace multiple spaces with a single space
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
@@ -154,9 +167,14 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             bold_text = bold.get_text(strip=False).strip()
                             bold.replace_with(NavigableString(f"**{bold_text}**"))
                         raw_text = p_copy.get_text(strip=False).strip()
-                        # Normalize with transliteration for better deduplication across scripts
-                        translit_text = transliterate_serbian(raw_text.lower())
-                        normalized_text = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', translit_text)).strip()
+                        # Normalize whitespace early to catch all variations
+                        normalized_raw = normalize_whitespace(raw_text)
+                        # Normalize with transliteration for deduplication
+                        translit_text = transliterate_serbian(normalized_raw.lower())
+                        normalized_text = re.sub(r'[^\w\s]', '', translit_text).strip()
+                        # Log both raw and normalized for debugging
+                        logger.debug(f"Raw text: {raw_text[:100]}")
+                        logger.debug(f"Normalized text: {normalized_text[:100]}")
                         if normalized_text and normalized_text not in seen_texts:
                             seen_texts.add(normalized_text)
                             unique_texts.append(raw_text)
