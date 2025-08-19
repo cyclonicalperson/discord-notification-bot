@@ -74,31 +74,43 @@ def transliterate_serbian(text):
 
 
 def normalize_whitespace_and_clean(text):
-    """Normalize whitespace and clean text in a single pass."""
+    """Normalize whitespace while preserving intentional formatting."""
     if not text or not text.strip():
         return ""
 
-    # Replace all Unicode whitespace characters with a single space
-    text = ''.join(' ' if unicodedata.category(c).startswith('Z') else c for c in text)
-    # Replace multiple spaces with a single space and strip
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    # Replace problematic Unicode whitespace with regular spaces, but preserve newlines
+    lines = text.split('\n')
+    cleaned_lines = []
+
+    for line in lines:
+        # Replace Unicode whitespace characters with regular spaces, but keep structure
+        line = ''.join(' ' if unicodedata.category(c).startswith('Z') and c != '\n' else c for c in line)
+        # Only collapse multiple spaces within a line, don't strip leading/trailing spaces completely
+        line = re.sub(r' {2,}', ' ', line)  # Replace 2+ spaces with single space
+        cleaned_lines.append(line)
+
+    # Join lines back and clean up excessive newlines (more than 2 consecutive)
+    result = '\n'.join(cleaned_lines)
+    result = re.sub(r'\n{3,}', '\n\n', result)  # Max 2 consecutive newlines
+
+    return result.strip()  # Only strip from very beginning and end
 
 
 def create_dedup_key(text):
-    """Create a consistent deduplication key from text."""
+    """Create a consistent deduplication key from text without destroying original formatting."""
     if not text:
         return ""
 
-    # First normalize whitespace
-    normalized = normalize_whitespace_and_clean(text)
-
+    # Create a normalized version ONLY for deduplication, don't use for display
     # Convert to lowercase and transliterate
-    translit = transliterate_serbian(normalized.lower())
+    translit = transliterate_serbian(text.lower())
 
-    # Remove punctuation and extra spaces for comparison
-    clean_key = re.sub(r'[^\w\s]', ' ', translit)
-    clean_key = re.sub(r'\s+', ' ', clean_key).strip()
+    # Remove all punctuation, whitespace, and formatting for comparison
+    clean_key = re.sub(r'\W', '', translit)  # Remove everything except word characters
+
+    # Further normalize common patterns in Serbian academic announcements
+    clean_key = re.sub(r'(daje|ostatak|broj|indeksa|ucionici|ucionnica|kolokvijum|poceti)', '', clean_key)
+    clean_key = re.sub(r'\d+', 'N', clean_key)  # Replace all numbers with 'N' for pattern matching
 
     return clean_key
 
@@ -167,23 +179,28 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 summary_text = "No summary available."
 
                 if modal:
-                    # Get all text content from the modal, excluding title and date elements
-                    summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
-                    logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
+                    # Get all content from the modal, including lists and paragraphs
+                    summary_elems = modal.select('p:not(.lead):not(.news_title_date), ul, ol, li')
+                    logger.debug(f"Found {len(summary_elems)} content elements for modal_id: {modal_id}")
 
                     if summary_elems:
                         logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
 
-                    # Use a more robust deduplication approach
+                    # Use a more robust deduplication approach with semantic similarity checking
                     seen_keys = set()
+                    seen_semantic_keys = set()  # For checking semantic similarity
                     unique_texts = []
 
-                    for p in summary_elems:
+                    for elem in summary_elems:
+                        # Skip nested list items to avoid duplication
+                        if elem.name == 'li' and elem.find_parent(['ul', 'ol']) in summary_elems:
+                            continue
+
                         # Work on a copy to preserve original structure
-                        p_copy = p.__copy__()
+                        elem_copy = elem.__copy__()
 
                         # Process <a> tags for links
-                        for a in p_copy.find_all('a'):
+                        for a in elem_copy.find_all('a'):
                             link_text = a.get_text(strip=True).strip()
                             if link_text:  # Only process non-empty links
                                 link_url = urljoin(base_url, a.get('href', ''))
@@ -194,36 +211,77 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 a.extract()  # Remove empty links
 
                         # Process <strong> and <b> tags for bold
-                        for bold in p_copy.find_all(['strong', 'b']):
+                        for bold in elem_copy.find_all(['strong', 'b']):
                             bold_text = bold.get_text(strip=True).strip()
                             if bold_text:  # Only process non-empty bold text
                                 bold.replace_with(NavigableString(f"**{bold_text}**"))
                             else:
                                 bold.extract()  # Remove empty bold tags
 
-                        # Get the processed text
-                        raw_text = p_copy.get_text(strip=False)
+                        # Handle lists specially to format them properly
+                        if elem.name in ['ul', 'ol']:
+                            list_items = elem_copy.find_all('li')
+                            if list_items:
+                                formatted_items = []
+                                for li in list_items:
+                                    li_text = normalize_whitespace_and_clean(li.get_text())
+                                    if li_text:
+                                        formatted_items.append(f"- {li_text}")
+
+                                if formatted_items:
+                                    raw_text = '\n'.join(formatted_items)
+                                else:
+                                    continue
+                            else:
+                                continue
+                        else:
+                            # Get the processed text for paragraphs
+                            raw_text = elem_copy.get_text(strip=False)
 
                         # Normalize whitespace once
                         clean_text = normalize_whitespace_and_clean(raw_text)
 
-                        # Skip empty paragraphs
+                        # Skip empty content
                         if not clean_text:
                             continue
 
                         # Create deduplication key
                         dedup_key = create_dedup_key(clean_text)
 
-                        # Log both raw and normalized for debugging
+                        # Also create a semantic key for more aggressive deduplication
+                        semantic_key = re.sub(r'\W+', '', dedup_key.lower())  # Remove all non-word characters
+
+                        # Log for debugging
                         logger.debug(f"Clean text: {clean_text[:100]}")
                         logger.debug(f"Dedup key: {dedup_key[:100]}")
+                        logger.debug(f"Semantic key: {semantic_key[:100]}")
 
-                        # Check for duplicates using the dedup key
-                        if dedup_key and dedup_key not in seen_keys:
+                        # Check for both exact and semantic duplicates
+                        is_duplicate = False
+                        if dedup_key in seen_keys:
+                            is_duplicate = True
+                            logger.debug(f"Exact duplicate found: {dedup_key[:50]}")
+                        elif semantic_key in seen_semantic_keys and len(
+                                semantic_key) > 20:  # Only for substantial content
+                            is_duplicate = True
+                            logger.debug(f"Semantic duplicate found: {semantic_key[:50]}")
+
+                        # Check for substring relationships (one text contains another)
+                        if not is_duplicate:
+                            for existing_key in seen_semantic_keys:
+                                if (len(existing_key) > 10 and len(semantic_key) > 10 and
+                                        (semantic_key in existing_key or existing_key in semantic_key)):
+                                    is_duplicate = True
+                                    logger.debug(
+                                        f"Substring duplicate found: {semantic_key[:50]} vs {existing_key[:50]}")
+                                    break
+
+                        if not is_duplicate and dedup_key and semantic_key:
                             seen_keys.add(dedup_key)
+                            seen_semantic_keys.add(semantic_key)
                             unique_texts.append(clean_text)
-                        elif dedup_key:
-                            logger.debug(f"Duplicate text found in {post_title}: {dedup_key[:100]}")
+                        elif is_duplicate:
+                            logger.debug(f"Duplicate content skipped for {post_title}: {clean_text[:100]}")
 
                     # Join unique texts with double newlines
                     summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
