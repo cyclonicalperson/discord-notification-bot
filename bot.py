@@ -117,9 +117,8 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
                     if summary_elems:
                         logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
-                    seen_texts = set()
-                    unique_texts = []
-                    for p in summary_elems:
+                        # Take only the first <p> element to ensure only one summary
+                        p = summary_elems[0]
                         p_copy = p.__copy__()
                         # Normalize whitespace in HTML content before processing
                         raw_html = str(p_copy)
@@ -135,19 +134,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                         for bold in p_copy.find_all(['strong', 'b']):
                             bold_text = bold.get_text(strip=False).strip()
                             bold.replace_with(NavigableString(f"**{bold_text}**"))
-                        raw_text = p_copy.get_text(strip=False).strip()
-                        # Normalize for comparison
-                        normalized_text = unicodedata.normalize('NFKD', raw_text)
-                        normalized_text = re.sub(r'[^\w\s]', '', normalized_text)
-                        normalized_text = re.sub(r'\s+', ' ', normalized_text).strip().lower()
-                        logger.debug(f"Raw text for {post_title}: {raw_text[:100]}")
-                        logger.debug(f"Normalized text for {post_title}: {normalized_text[:100]}")
-                        if normalized_text and normalized_text not in seen_texts:
-                            seen_texts.add(normalized_text)
-                            unique_texts.append(raw_text)
-                        elif normalized_text:
-                            logger.debug(f"Duplicate text found in {post_title}: {normalized_text[:100]}")
-                    summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
+                        summary_text = p_copy.get_text(strip=False).strip()
 
                 if add_to_seen:
                     seen_announcements.add(modal_id)
