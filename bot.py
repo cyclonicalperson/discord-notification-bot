@@ -1,19 +1,15 @@
 import os
 import logging
-import urllib
-
 import discord
 import asyncio
 import requests
 import random
 import re
-
 import unicodedata
 from discord.ext import commands
-from bs4 import BeautifulSoup
-from bs4 import NavigableString
+from bs4 import BeautifulSoup, NavigableString
 from dotenv import load_dotenv
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -73,7 +69,6 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
     total_rows = 0
     page_count = 0
     current_url = base_url
-    cycle_seen_ids = set()  # Track modal_ids in this fetch cycle to prevent duplicates
 
     while current_url:
         page_count += 1
@@ -110,19 +105,14 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     logger.warning(f"No modal_id found for announcement: {post_title}")
                     continue
 
-                # Skip if modal_id was already processed in this cycle
-                if modal_id in cycle_seen_ids:
-                    logger.debug(f"Skipping duplicate modal_id in cycle: {modal_id} for {post_title}")
-                    continue
-
-                # Skip if already seen globally and not adding to seen
-                if not add_to_seen and modal_id in seen_announcements:
+                # Skip if already seen
+                if modal_id in seen_announcements:
+                    logger.debug(f"Skipping seen announcement: {post_title} (modal_id: {modal_id})")
                     continue
 
                 modal = soup.select_one(f'#{modal_id}')
                 summary_text = "No summary available."
                 if modal:
-                    # Get all text content from the modal, excluding title and date elements
                     summary_elems = modal.select('p:not(.lead):not(.news_title_date)')
                     logger.debug(f"Found {len(summary_elems)} <p> elements for modal_id: {modal_id}")
                     if summary_elems:
@@ -130,24 +120,26 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     seen_texts = set()
                     unique_texts = []
                     for p in summary_elems:
-                        # Work on a copy to preserve original structure
                         p_copy = p.__copy__()
+                        # Normalize whitespace in HTML content before processing
+                        raw_html = str(p_copy)
+                        raw_html = re.sub(r'\s+', ' ', raw_html).strip()
+                        p_copy = BeautifulSoup(raw_html, 'html.parser')
                         # Process <a> tags for clickable links
                         for a in p_copy.find_all('a'):
                             link_text = a.get_text(strip=False).strip()
                             link_url = urljoin(base_url, a.get('href', ''))
-                            # Encode URL to handle spaces and special characters
-                            link_url = urllib.parse.quote(link_url, safe=':/?=&')
+                            link_url = quote(link_url, safe=':/?=&')
                             a.replace_with(NavigableString(f"[{link_text}]({link_url})"))
                         # Process <strong> and <b> tags for bold
                         for bold in p_copy.find_all(['strong', 'b']):
                             bold_text = bold.get_text(strip=False).strip()
                             bold.replace_with(NavigableString(f"**{bold_text}**"))
                         raw_text = p_copy.get_text(strip=False).strip()
-                        # Normalize for comparison: aggressive Unicode normalization and cleanup
-                        normalized_text = unicodedata.normalize('NFKD', raw_text)  # Normalize Unicode
-                        normalized_text = re.sub(r'[^\w\s]', '', normalized_text)  # Remove non-word chars
-                        normalized_text = re.sub(r'\s+', ' ', normalized_text).strip().lower()  # Collapse spaces
+                        # Normalize for comparison
+                        normalized_text = unicodedata.normalize('NFKD', raw_text)
+                        normalized_text = re.sub(r'[^\w\s]', '', normalized_text)
+                        normalized_text = re.sub(r'\s+', ' ', normalized_text).strip().lower()
                         logger.debug(f"Raw text for {post_title}: {raw_text[:100]}")
                         logger.debug(f"Normalized text for {post_title}: {normalized_text[:100]}")
                         if normalized_text and normalized_text not in seen_texts:
@@ -157,14 +149,12 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             logger.debug(f"Duplicate text found in {post_title}: {normalized_text[:100]}")
                     summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
-                unique_id = modal_id
-                cycle_seen_ids.add(unique_id)  # Mark as seen in this cycle
                 if add_to_seen:
-                    seen_announcements.add(unique_id)
-                    logger.info(f"Added to seen: {post_title} (modal_id: {unique_id})")
-                elif unique_id not in seen_announcements:
-                    announcements.append((post_title, post_link, summary_text, unique_id))
-                    logger.info(f"Added to new announcements: {post_title} (modal_id: {unique_id})")
+                    seen_announcements.add(modal_id)
+                    logger.info(f"Added to seen: {post_title} (modal_id: {modal_id})")
+                else:
+                    announcements.append((post_title, post_link, summary_text, modal_id))
+                    logger.info(f"Added to new announcements: {post_title} (modal_id: {modal_id})")
 
             next_link = soup.select_one('a.next, a[rel="next"], a.page-link, a[href*="page="], a[href*="/page/"]')
             current_url = urljoin(base_url, next_link['href']) if next_link and next_link.get('href') else None
@@ -182,7 +172,7 @@ async def scan_initial_announcements():
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
         try:
-            seen_announcements.clear()  # Clear to avoid stale data
+            seen_announcements.clear()
             logger.info(f"Before scan: seen_announcements size = {len(seen_announcements)}")
             _, total_rows = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True,
                                                       limit_newest=False)
@@ -206,29 +196,21 @@ async def check_announcements():
         logger.error(f"Channel with ID {CHANNEL_ID} not found")
         return
 
-    # Wait for initial scan to complete
     await asyncio.sleep(5)
 
     while not bot.is_closed():
         try:
             logger.info(f"Before check: seen_announcements size = {len(seen_announcements)}")
-            new_announcements, total_rows = await fetch_announcements(
-                'https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=False
-            )
+            new_announcements, total_rows = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla',
+                                                                      add_to_seen=False)
             logger.info(f"Found {len(new_announcements)} new announcements")
 
             for title, link, summary, modal_id in reversed(new_announcements):
                 seen_announcements.add(modal_id)
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
-                    # Create embed with hardcoded description
                     embed = create_embed(title, link)
-
-                    # Send message with role mention, title, and summary in content only
-                    message_content = f"<@&{ROLE_ID}> **{title}**"
-                    if summary and summary.strip() and summary != "No summary available.":
-                        message_content += f"\n\n{summary}"
-
+                    message_content = f"<@&{ROLE_ID}> **{title}**\n\n{summary}"
                     await channel.send(content=message_content, embed=embed)
                     logger.info(f"Sent notification for: {title} (modal_id: {modal_id})")
                     await asyncio.sleep(1)
@@ -239,9 +221,8 @@ async def check_announcements():
 
             if len(seen_announcements) > 50:
                 seen_announcements.clear()
-                _, _ = await fetch_announcements(
-                    'https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True, limit_newest=False
-                )
+                _, _ = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True,
+                                                 limit_newest=False)
 
         except Exception as e:
             logger.error(f"Error in check_announcements: {e}")
@@ -263,7 +244,6 @@ async def on_ready():
         logger.error(f"Channel with ID {CHANNEL_ID} not found")
 
     await scan_initial_announcements()
-    # Start periodic checks after initial scan
     bot.loop.create_task(check_announcements())
 
 
@@ -292,7 +272,6 @@ async def debug_reread(ctx):
     """Temporarily re-read the last announcement for testing."""
     logger.info(f"Debug reread triggered by {ctx.author}")
     if seen_announcements:
-        # Remove the most recent modal_id to reprocess it
         seen_announcements.pop()
         logger.info("Removed last seen announcement for reprocessing")
     await ctx.send("Re-reading the last announcement...")
