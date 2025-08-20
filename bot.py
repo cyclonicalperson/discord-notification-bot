@@ -10,7 +10,7 @@ from discord.ext import commands
 from bs4 import BeautifulSoup
 from bs4 import NavigableString
 from dotenv import load_dotenv
-from urllib.parse import urljoin, quote
+from urllib.parse import urljoin, quote, urlparse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -54,6 +54,34 @@ def create_embed(title, url=None):
     if url and url.startswith(('http://', 'https://')):
         embed.url = url
     return embed
+
+
+def fix_url(url, base_url):
+    """Fix and properly encode URLs."""
+    if not url:
+        return ""
+
+    # If it's already a complete URL, validate and return
+    if url.startswith(('http://', 'https://')):
+        return url
+
+    # Join with base URL
+    full_url = urljoin(base_url, url)
+
+    # Parse URL to handle encoding properly
+    parsed = urlparse(full_url)
+
+    # Only encode the path part, leave the rest intact
+    if parsed.path:
+        # Encode only non-ASCII characters and spaces, preserve slashes and other URL-safe chars
+        encoded_path = quote(parsed.path.encode('utf-8'), safe='/:@!$&\'()*+,;=')
+        full_url = f"{parsed.scheme}://{parsed.netloc}{encoded_path}"
+        if parsed.query:
+            full_url += f"?{parsed.query}"
+        if parsed.fragment:
+            full_url += f"#{parsed.fragment}"
+
+    return full_url
 
 
 def transliterate_serbian(text):
@@ -158,7 +186,10 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 if not post_link_elem:
                     logger.warning("No post link element found in row")
                     continue
-                post_link = post_link_elem.get('href', '')
+
+                # Get the link and fix it properly
+                raw_link = post_link_elem.get('href', '')
+                post_link = fix_url(raw_link, base_url)
                 post_title = post_link_elem.text.strip()
                 modal_id = post_link_elem.get('data-reveal-id', post_title)
 
@@ -250,10 +281,10 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                     continue
 
                                 if link_text:  # Only process non-empty, non-share links
-                                    link_url = urljoin(base_url, a.get('href', ''))
-                                    # URL-encode the link to fix broken links with spaces or special chars
-                                    encoded_link_url = quote(link_url, safe=':/?=&%')
-                                    a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({encoded_link_url})"))
+                                    # Use the new fix_url function for proper URL handling
+                                    original_href = a.get('href', '')
+                                    fixed_link_url = fix_url(original_href, base_url)
+                                    a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({fixed_link_url})"))
                                 else:
                                     a.extract()  # Remove empty links
 
@@ -371,7 +402,7 @@ async def scan_initial_announcements():
             if total_rows <= 20:
                 logger.warning("Few announcements processed. Possible issue with URL or table selector.")
                 await channel.send(
-                    "Warning: Bot found 0 announcements. Possible wrong URL or table selector. Check logs.")
+                    "Warning: Bot found few announcements. Possible wrong URL or table selector. Check logs.")
         except Exception as e:
             logger.error(f"Error in scan_initial_announcements: {e}")
             await channel.send("Error: Bot failed to scan announcements. Check logs.")
@@ -402,7 +433,7 @@ async def check_announcements():
                 seen_announcements.add(modal_id)
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
-                    # Create embed with hardcoded description
+                    # Create embed with the properly fixed link
                     embed = create_embed(title, link)
 
                     # Send message with role mention, title, and summary in content only
