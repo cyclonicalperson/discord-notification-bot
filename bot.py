@@ -143,186 +143,6 @@ def create_dedup_key(text):
     return clean_key
 
 
-def is_duplicate_content(new_text, existing_texts, similarity_threshold=0.8):
-    """
-    Check if new_text is substantially similar to any existing text.
-    Uses multiple similarity metrics to catch duplicates.
-    """
-    if not new_text or not existing_texts:
-        return False
-
-    new_key = create_dedup_key(new_text)
-    if not new_key or len(new_key) < 10:  # Skip very short content
-        return False
-
-    for existing_text in existing_texts:
-        existing_key = create_dedup_key(existing_text)
-        if not existing_key or len(existing_key) < 10:
-            continue
-
-        # Exact match
-        if new_key == existing_key:
-            logger.debug(f"Exact duplicate found: {new_key[:30]}")
-            return True
-
-        # Substring match (one contains the other significantly)
-        shorter_len = min(len(new_key), len(existing_key))
-        longer_len = max(len(new_key), len(existing_key))
-
-        if shorter_len > 20:  # Only for substantial content
-            if new_key in existing_key or existing_key in new_key:
-                # Check if the contained text is significant portion
-                containment_ratio = shorter_len / longer_len
-                if containment_ratio > 0.7:  # 70% or more overlap
-                    logger.debug(f"Substring duplicate found: {new_key[:30]} vs {existing_key[:30]}")
-                    return True
-
-        # Levenshtein-like similarity for very similar content
-        if longer_len > 30:  # Only for longer content
-            # Simple similarity check: count common characters
-            common_chars = sum(1 for c in new_key if c in existing_key)
-            similarity = common_chars / longer_len
-            if similarity > similarity_threshold:
-                logger.debug(
-                    f"High similarity duplicate found: {similarity:.2f} - {new_key[:30]} vs {existing_key[:30]}")
-                return True
-
-    return False
-
-
-def process_modal_content(modal, post_title):
-    """
-    Process modal content with improved deduplication logic.
-    Special handling for announcements that tend to have duplicates.
-    """
-    if not modal:
-        return "No summary available."
-
-    # Get all content from the modal - be more inclusive with selectors
-    summary_elems = modal.select(
-        'p:not(.lead):not(.news_title_date), div:not(.modal-header):not(.close-reveal-modal):not(.share-links), ul, ol, li')
-
-    # If no structured elements found, get any direct text content from the modal
-    if not summary_elems:
-        modal_text = modal.get_text().strip()
-        if modal_text:
-            lines = [line.strip() for line in modal_text.split('\n') if line.strip()]
-            content_lines = []
-            for line in lines:
-                if (len(line) > 20 and
-                        not line.endswith(':') and
-                        '©' not in line and
-                        'podeli' not in line.lower() and
-                        'share' not in line.lower() and
-                        'facebook' not in line.lower() and
-                        'twitter' not in line.lower() and
-                        not line.startswith('×')):
-                    content_lines.append(line)
-            if content_lines:
-                return '\n\n'.join(content_lines)
-            else:
-                return "No summary available."
-        else:
-            return "No summary available."
-
-    logger.debug(f"Found {len(summary_elems)} content elements for: {post_title}")
-
-    # Improved deduplication with better tracking
-    unique_texts = []
-    processed_texts = []  # Keep track of all processed text for comparison
-
-    for elem in summary_elems:
-        # Skip nested list items to avoid duplication
-        if elem.name == 'li' and elem.find_parent(['ul', 'ol']) in summary_elems:
-            continue
-
-        # Skip elements that contain share/social media links
-        elem_text = elem.get_text().lower()
-        if ('podeli' in elem_text or 'share' in elem_text or
-                'facebook' in elem_text or 'twitter' in elem_text or
-                elem_text.strip().startswith('×')):
-            continue
-
-        # Work on a copy to preserve original structure
-        elem_copy = elem.__copy__()
-
-        # Process <a> tags for links, but skip social/share links
-        for a in elem_copy.find_all('a'):
-            link_text = a.get_text(strip=True).strip().lower()
-            link_href = a.get('href', '').lower()
-
-            if ('podeli' in link_text or 'share' in link_text or
-                    'facebook' in link_text or 'twitter' in link_text or
-                    'facebook' in link_href or 'twitter' in link_href or
-                    'instagram' in link_href or 'linkedin' in link_href):
-                a.extract()
-                continue
-
-            if link_text:
-                original_href = a.get('href', '')
-                fixed_link_url = fix_url(original_href, 'https://imi.pmf.kg.ac.rs/oglasna-tabla')
-                a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({fixed_link_url})"))
-            else:
-                a.extract()
-
-        # Process <strong> and <b> tags for bold
-        for bold in elem_copy.find_all(['strong', 'b']):
-            bold_text = bold.get_text(strip=True).strip()
-            if bold_text:
-                bold.replace_with(NavigableString(f"**{bold_text}**"))
-            else:
-                bold.extract()
-
-        # Handle lists specially to format them properly
-        if elem.name in ['ul', 'ol']:
-            list_items = elem_copy.find_all('li')
-            if list_items:
-                formatted_items = []
-                for li in list_items:
-                    li_text = li.get_text()
-                    if 'podeli' in li_text.lower() or 'share' in li_text.lower():
-                        continue
-                    li_text = normalize_whitespace_and_clean(li_text)
-                    if li_text:
-                        formatted_items.append(f"- {li_text}")
-
-                if formatted_items:
-                    clean_text = '\n'.join(formatted_items)
-                else:
-                    continue
-            else:
-                continue
-        else:
-            raw_text = elem_copy.get_text()
-            clean_text = normalize_whitespace_and_clean(raw_text)
-
-        # Skip empty content
-        if not clean_text or len(clean_text.strip()) < 5:
-            continue
-
-        # Use improved duplicate detection
-        if not is_duplicate_content(clean_text, processed_texts):
-            unique_texts.append(clean_text)
-            processed_texts.append(clean_text)
-            logger.debug(f"Added unique content: {clean_text[:50]}...")
-        else:
-            logger.debug(f"Skipped duplicate content: {clean_text[:50]}...")
-
-    # Join unique texts with double newlines, preserving original formatting
-    if unique_texts:
-        # Additional check: if we have very similar consecutive texts, merge them
-        final_texts = []
-        for text in unique_texts:
-            if not final_texts or not is_duplicate_content(text, [final_texts[-1]], similarity_threshold=0.9):
-                final_texts.append(text)
-            else:
-                logger.debug(f"Merged similar consecutive content")
-
-        return '\n\n'.join(final_texts)
-    else:
-        return "No summary available."
-
-
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
     """Fetch announcements using requests."""
     headers = {
@@ -337,7 +157,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
     total_rows = 0
     page_count = 0
     current_url = base_url
-    cycle_seen_ids = set()
+    cycle_seen_ids = set()  # Track modal_ids in this fetch cycle to prevent duplicates
 
     while current_url:
         page_count += 1
@@ -367,6 +187,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     logger.warning("No post link element found in row")
                     continue
 
+                # Get the link and fix it properly
                 raw_link = post_link_elem.get('href', '')
                 post_link = fix_url(raw_link, base_url)
                 post_title = post_link_elem.text.strip()
@@ -386,12 +207,170 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                     continue
 
                 modal = soup.select_one(f'#{modal_id}')
+                summary_text = "No summary available."
 
-                # Use the improved content processing function
-                summary_text = process_modal_content(modal, post_title)
+                if modal:
+                    # Get all content from the modal - be more inclusive with selectors
+                    # Look for paragraphs, divs, lists, and any text content
+                    summary_elems = modal.select(
+                        'p:not(.lead):not(.news_title_date), div:not(.modal-header):not(.close-reveal-modal):not(.share-links), ul, ol, li')
+
+                    # If no structured elements found, get any direct text content from the modal
+                    if not summary_elems:
+                        # Look for any text content in the modal
+                        modal_text = modal.get_text().strip()
+                        if modal_text:
+                            # Split by lines and process as individual elements
+                            lines = [line.strip() for line in modal_text.split('\n') if line.strip()]
+                            # Filter out title/header lines and common elements like "Podeli"
+                            content_lines = []
+                            for line in lines:
+                                # Skip very short lines, titles/headers, share links, and common UI elements
+                                if (len(line) > 20 and
+                                        not line.endswith(':') and
+                                        '©' not in line and
+                                        'podeli' not in line.lower() and
+                                        'share' not in line.lower() and
+                                        'facebook' not in line.lower() and
+                                        'twitter' not in line.lower() and
+                                        not line.startswith('×')):
+                                    content_lines.append(line)
+                            if content_lines:
+                                summary_text = '\n\n'.join(content_lines)
+                            else:
+                                summary_text = "No summary available."
+                        else:
+                            summary_text = "No summary available."
+                    else:
+                        logger.debug(f"Found {len(summary_elems)} content elements for modal_id: {modal_id}")
+
+                        if summary_elems:
+                            logger.debug(f"Modal HTML for {post_title}: {modal.prettify()[:1000]}")
+
+                        # Use a more robust deduplication approach with semantic similarity checking
+                        seen_keys = set()
+                        seen_semantic_keys = set()  # For checking semantic similarity
+                        unique_texts = []
+
+                        for elem in summary_elems:
+                            # Skip nested list items to avoid duplication
+                            if elem.name == 'li' and elem.find_parent(['ul', 'ol']) in summary_elems:
+                                continue
+
+                            # Skip elements that contain share/social media links
+                            elem_text = elem.get_text().lower()
+                            if ('podeli' in elem_text or 'share' in elem_text or
+                                    'facebook' in elem_text or 'twitter' in elem_text or
+                                    elem_text.strip().startswith('×')):
+                                continue
+
+                            # Work on a copy to preserve original structure
+                            elem_copy = elem.__copy__()
+
+                            # Process <a> tags for links, but skip social/share links
+                            for a in elem_copy.find_all('a'):
+                                link_text = a.get_text(strip=True).strip().lower()
+                                link_href = a.get('href', '').lower()
+
+                                # Skip share/social media links
+                                if ('podeli' in link_text or 'share' in link_text or
+                                        'facebook' in link_text or 'twitter' in link_text or
+                                        'facebook' in link_href or 'twitter' in link_href or
+                                        'instagram' in link_href or 'linkedin' in link_href):
+                                    a.extract()  # Remove share links entirely
+                                    continue
+
+                                if link_text:  # Only process non-empty, non-share links
+                                    # Use the new fix_url function for proper URL handling
+                                    original_href = a.get('href', '')
+                                    fixed_link_url = fix_url(original_href, base_url)
+                                    a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({fixed_link_url})"))
+                                else:
+                                    a.extract()  # Remove empty links
+
+                            # Process <strong> and <b> tags for bold
+                            for bold in elem_copy.find_all(['strong', 'b']):
+                                bold_text = bold.get_text(strip=True).strip()
+                                if bold_text:  # Only process non-empty bold text
+                                    bold.replace_with(NavigableString(f"**{bold_text}**"))
+                                else:
+                                    bold.extract()  # Remove empty bold tags
+
+                            # Handle lists specially to format them properly
+                            if elem.name in ['ul', 'ol']:
+                                list_items = elem_copy.find_all('li')
+                                if list_items:
+                                    formatted_items = []
+                                    for li in list_items:
+                                        li_text = li.get_text()
+                                        # Skip list items that are share links
+                                        if 'podeli' in li_text.lower() or 'share' in li_text.lower():
+                                            continue
+                                        # Only do minimal cleaning on list items
+                                        li_text = normalize_whitespace_and_clean(li_text)
+                                        if li_text:
+                                            formatted_items.append(f"- {li_text}")
+
+                                    if formatted_items:
+                                        clean_text = '\n'.join(formatted_items)
+                                    else:
+                                        continue
+                                else:
+                                    continue
+                            else:
+                                # Get the processed text for paragraphs and preserve original formatting
+                                raw_text = elem_copy.get_text()
+                                # Apply minimal normalization to preserve original spacing
+                                clean_text = normalize_whitespace_and_clean(raw_text)
+
+                            # Skip empty content
+                            if not clean_text:
+                                continue
+
+                            # Create deduplication key (this is only for comparison, not for display)
+                            dedup_key = create_dedup_key(clean_text)
+
+                            # Also create a semantic key for more aggressive deduplication
+                            semantic_key = re.sub(r'\W+', '', dedup_key)  # Remove remaining non-word characters
+
+                            # Log for debugging
+                            logger.debug(f"Original text: {clean_text[:100]}")
+                            logger.debug(f"Dedup key: {dedup_key[:100]}")
+                            logger.debug(f"Semantic key: {semantic_key[:50]}")
+
+                            # Check for both exact and semantic duplicates
+                            is_duplicate = False
+                            if dedup_key in seen_keys:
+                                is_duplicate = True
+                                logger.debug(f"Exact duplicate found: {dedup_key[:30]}")
+                            elif semantic_key in seen_semantic_keys and len(
+                                    semantic_key) > 15:  # Only for substantial content
+                                is_duplicate = True
+                                logger.debug(f"Semantic duplicate found: {semantic_key[:30]}")
+
+                            # Check for substring relationships (one text contains another) - more lenient threshold
+                            if not is_duplicate and len(semantic_key) > 10:
+                                for existing_key in seen_semantic_keys:
+                                    if (len(existing_key) > 10 and
+                                            (len(semantic_key) > 20 and semantic_key in existing_key) or
+                                            (len(existing_key) > 20 and existing_key in semantic_key)):
+                                        is_duplicate = True
+                                        logger.debug(
+                                            f"Substring duplicate found: {semantic_key[:30]} vs {existing_key[:30]}")
+                                        break
+
+                            if not is_duplicate and dedup_key and semantic_key:
+                                seen_keys.add(dedup_key)
+                                seen_semantic_keys.add(semantic_key)
+                                unique_texts.append(clean_text)  # Use original formatting for display
+                            elif is_duplicate:
+                                logger.debug(f"Duplicate content skipped for {post_title}")
+
+                        # Join unique texts with double newlines, preserving original formatting
+                        summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
 
                 unique_id = modal_id
-                cycle_seen_ids.add(unique_id)
+                cycle_seen_ids.add(unique_id)  # Mark as seen in this cycle
                 if add_to_seen:
                     seen_announcements.add(unique_id)
                     logger.info(f"Added to seen: {post_title} (modal_id: {unique_id})")
@@ -415,7 +394,7 @@ async def scan_initial_announcements():
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
         try:
-            seen_announcements.clear()
+            seen_announcements.clear()  # Clear to avoid stale data
             logger.info(f"Before scan: seen_announcements size = {len(seen_announcements)}")
             _, total_rows = await fetch_announcements('https://imi.pmf.kg.ac.rs/oglasna-tabla', add_to_seen=True,
                                                       limit_newest=False)
@@ -454,8 +433,10 @@ async def check_announcements():
                 seen_announcements.add(modal_id)
                 logger.info(f"New announcement: {title} (modal_id: {modal_id})")
                 try:
+                    # Create embed with the properly fixed link
                     embed = create_embed(title, link)
 
+                    # Send message with role mention, title, and summary in content only
                     message_content = f"<@&{ROLE_ID}> **{title}**"
                     if summary and summary.strip() and summary != "No summary available.":
                         message_content += f"\n\n{summary}"
@@ -494,6 +475,7 @@ async def on_ready():
         logger.error(f"Channel with ID {CHANNEL_ID} not found")
 
     await scan_initial_announcements()
+    # Start periodic checks after initial scan
     bot.loop.create_task(check_announcements())
 
 
@@ -522,6 +504,7 @@ async def debug_reread(ctx):
     """Temporarily re-read the last announcement for testing."""
     logger.info(f"Debug reread triggered by {ctx.author}")
     if seen_announcements:
+        # Remove the most recent modal_id to reprocess it
         seen_announcements.pop()
         logger.info("Removed last seen announcement for reprocessing")
     await ctx.send("Re-reading the last announcement...")
