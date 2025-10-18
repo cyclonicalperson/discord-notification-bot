@@ -228,12 +228,12 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 # Skip very short lines, titles/headers, share links, and common UI elements
                                 if (len(line) > 20 and
                                         not line.endswith(':') and
-                                        'Â©' not in line and
+                                        '©' not in line and
                                         'podeli' not in line.lower() and
                                         'share' not in line.lower() and
                                         'facebook' not in line.lower() and
                                         'twitter' not in line.lower() and
-                                        not line.startswith('Ã—')):
+                                        not line.startswith('—')):
                                     content_lines.append(line)
                             if content_lines:
                                 summary_text = '\n\n'.join(content_lines)
@@ -251,20 +251,18 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                         seen_keys = set()
                         seen_semantic_keys = set()  # For checking semantic similarity
                         unique_texts = []
+                        processed_elements = set()  # Track processed elements to avoid re-processing
 
                         for elem in summary_elems:
+                            # Skip if element was already processed
+                            if id(elem) in processed_elements:
+                                continue
+
                             # Skip nested list items to avoid duplication - only get direct children
                             if elem.name == 'li':
                                 parent_list = elem.find_parent(['ul', 'ol'])
                                 if parent_list and parent_list in summary_elems:
                                     continue
-
-                            # Skip elements that contain share/social media links
-                            elem_text = elem.get_text().lower()
-                            if ('podeli' in elem_text or 'share' in elem_text or
-                                    'facebook' in elem_text or 'twitter' in elem_text or
-                                    elem_text.strip().startswith('Ã—')):
-                                continue
 
                             # Work on a copy to preserve original structure
                             elem_copy = elem.__copy__()
@@ -320,6 +318,10 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
 
                                     if formatted_items:
                                         clean_text = '\n'.join(formatted_items)
+                                        processed_elements.add(id(elem))
+                                        # Mark all child li elements as processed
+                                        for li in list_items:
+                                            processed_elements.add(id(li))
                                     else:
                                         continue
                                 else:
@@ -329,6 +331,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 raw_text = elem_copy.get_text()
                                 # Apply minimal normalization to preserve original spacing
                                 clean_text = normalize_whitespace_and_clean(raw_text)
+                                processed_elements.add(id(elem))
 
                             # Skip empty content
                             if not clean_text:
