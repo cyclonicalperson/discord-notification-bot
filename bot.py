@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import logging
 import discord
@@ -134,13 +135,42 @@ def create_dedup_key(text):
     translit = transliterate_serbian(text.lower())
 
     # Remove all punctuation, whitespace, and formatting for comparison
-    clean_key = re.sub(r'\W', '', translit)  # Remove everything except word characters
+    clean_key = re.sub(r'\W+', '', translit)  # Remove everything except word characters
 
     # Further normalize common patterns in Serbian academic announcements
     clean_key = re.sub(r'(daje|ostatak|broj|indeksa|ucionici|ucionnica|kolokvijum|poceti)', '', clean_key)
     clean_key = re.sub(r'\d+', 'N', clean_key)  # Replace all numbers with 'N' for pattern matching
 
     return clean_key
+
+
+def format_table(table_elem):
+    """Format HTML table into Discord-friendly text format."""
+    rows = table_elem.find_all('tr')
+    if not rows:
+        return None
+
+    formatted_rows = []
+    for row in rows:
+        cells = row.find_all(['td', 'th'])
+        if cells:
+            # Get cell text and clean it
+            cell_texts = [cell.get_text(strip=True) for cell in cells]
+            # Filter out empty cells
+            cell_texts = [text for text in cell_texts if text]
+            if cell_texts:
+                # Join cells with | separator for table-like appearance
+                formatted_rows.append(' | '.join(cell_texts))
+
+    if formatted_rows:
+        # Add a simple separator line after header if there are multiple rows
+        if len(formatted_rows) > 1:
+            # Create separator based on first row length
+            separator = '-' * min(len(formatted_rows[0]), 50)
+            formatted_rows.insert(1, separator)
+        return '\n'.join(formatted_rows)
+
+    return None
 
 
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
@@ -164,6 +194,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
         logger.info(f"Fetching page {page_count}: {current_url}")
         try:
             response = requests.get(current_url, timeout=10, headers=headers, allow_redirects=True)
+            response.encoding = 'utf-8'
             logger.info(f"Status: {response.status_code}, Final URL: {response.url}")
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -210,13 +241,23 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                 summary_text = "No summary available."
 
                 if modal:
+                    # Check for tables first
+                    tables = modal.find_all('table')
+                    table_content = []
+                    for table in tables:
+                        formatted_table = format_table(table)
+                        if formatted_table:
+                            table_content.append(formatted_table)
+                            # Remove table from modal to avoid duplicate processing
+                            table.extract()
+
                     # Get all content from the modal - be more inclusive with selectors
                     # Look for paragraphs, divs, lists, and any text content
                     summary_elems = modal.select(
                         'p:not(.lead):not(.news_title_date), div:not(.modal-header):not(.close-reveal-modal):not(.share-links), ul, ol, li')
 
                     # If no structured elements found, get any direct text content from the modal
-                    if not summary_elems:
+                    if not summary_elems and not table_content:
                         # Look for any text content in the modal
                         modal_text = modal.get_text().strip()
                         if modal_text:
@@ -377,7 +418,13 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 logger.debug(f"Duplicate content skipped for {post_title}")
 
                         # Join unique texts with double newlines, preserving original formatting
-                        summary_text = '\n\n'.join(unique_texts) if unique_texts else "No summary available."
+                        summary_parts = []
+                        if unique_texts:
+                            summary_parts.append('\n\n'.join(unique_texts))
+                        if table_content:
+                            summary_parts.extend(table_content)
+
+                        summary_text = '\n\n'.join(summary_parts) if summary_parts else "No summary available."
 
                 unique_id = modal_id
                 cycle_seen_ids.add(unique_id)  # Mark as seen in this cycle
