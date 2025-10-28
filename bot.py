@@ -122,6 +122,18 @@ def normalize_whitespace_and_clean(text):
     result = '\n'.join(cleaned_lines)
     result = re.sub(r'\n{3,}', '\n\n', result)  # Max 2 consecutive newlines
 
+    # Fix excessive bold markers (more than 2 consecutive **)
+    result = re.sub(r'\*{3,}', '**', result)  # Replace 3+ asterisks with exactly 2
+
+    # Fix bold markers that are too close together (e.g., "****" -> "** **")
+    result = re.sub(r'\*\*\s*\*\*', '** **', result)  # Ensure space between separate bold sections
+
+    # Fix missing spaces after bold close markers
+    result = re.sub(r'\*\*([^\s*])', r'** \1', result)  # Add space after ** if next char is not space or *
+
+    # Fix missing spaces before bold open markers
+    result = re.sub(r'([^\s*])\*\*', r'\1 **', result)  # Add space before ** if prev char is not space or *
+
     return result.strip()  # Only strip from very beginning and end
 
 
@@ -194,7 +206,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
         logger.info(f"Fetching page {page_count}: {current_url}")
         try:
             response = requests.get(current_url, timeout=10, headers=headers, allow_redirects=True)
-            response.encoding = 'utf-8'
+            response.encoding = 'utf-8'  # Force UTF-8 encoding
             logger.info(f"Status: {response.status_code}, Final URL: {response.url}")
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -329,7 +341,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 if link_text.startswith('http') or link_text.startswith('www'):
                                     a.replace_with(NavigableString(fixed_link_url))
                                 elif link_text:
-                                    # Properly format markdown link with embedded URL
+                                    # Properly format Markdown link with embedded URL
                                     a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({fixed_link_url})"))
                                 else:
                                     a.extract()
@@ -338,7 +350,25 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             for bold in elem_copy.find_all(['strong', 'b']):
                                 bold_text = bold.get_text(strip=True).strip()
                                 if bold_text and not bold_text.startswith('**') and not bold_text.endswith('**'):
-                                    bold.replace_with(NavigableString(f"**{bold_text}**"))
+                                    # Add space before and after if needed to prevent text merging
+                                    prev_sibling = bold.previous_sibling
+                                    next_sibling = bold.next_sibling
+
+                                    # Check if we need space before
+                                    prefix = ''
+                                    if prev_sibling and isinstance(prev_sibling, NavigableString):
+                                        prev_text = str(prev_sibling)
+                                        if prev_text and not prev_text[-1].isspace():
+                                            prefix = ' '
+
+                                    # Check if we need space after
+                                    suffix = ''
+                                    if next_sibling and isinstance(next_sibling, NavigableString):
+                                        next_text = str(next_sibling)
+                                        if next_text and not next_text[0].isspace():
+                                            suffix = ' '
+
+                                    bold.replace_with(NavigableString(f"{prefix}**{bold_text}**{suffix}"))
                                 else:
                                     bold.extract()  # Remove empty bold tags
 
