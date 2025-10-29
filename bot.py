@@ -146,15 +146,11 @@ def create_dedup_key(text):
     # Convert to lowercase and transliterate
     translit = transliterate_serbian(text.lower())
 
-    # Remove all punctuation, whitespace, and formatting for comparison (including list markers)
-    clean_key = re.sub(r'[\W_]+', '', translit)  # Remove everything except alphanumeric
-
-    # Remove common list formatting patterns
-    clean_key = re.sub(r'^[\d]+', '', clean_key)  # Remove leading numbers (list markers)
-    clean_key = re.sub(r'kol\d*', '', clean_key)  # Remove "kol" and "1kol", "2kol" etc.
+    # Remove all punctuation, whitespace, and formatting for comparison
+    clean_key = re.sub(r'\W+', '', translit)  # Remove everything except word characters
 
     # Further normalize common patterns in Serbian academic announcements
-    clean_key = re.sub(r'(daje|ostatak|broj|indeksa|ucionici|ucionnica|kolokvijum|poceti|poena|poen)', '', clean_key)
+    clean_key = re.sub(r'(daje|ostatak|broj|indeksa|ucionici|ucionnica|kolokvijum|poceti)', '', clean_key)
     clean_key = re.sub(r'\d+', 'N', clean_key)  # Replace all numbers with 'N' for pattern matching
 
     return clean_key
@@ -307,7 +303,6 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                         # Use a more robust deduplication approach with semantic similarity checking
                         seen_keys = set()
                         seen_semantic_keys = set()  # For checking semantic similarity
-                        seen_student_indices = set()  # Track student indices to avoid duplicates
                         unique_texts = []
                         processed_elements = set()  # Track processed elements to avoid re-processing
 
@@ -346,7 +341,7 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 if link_text.startswith('http') or link_text.startswith('www'):
                                     a.replace_with(NavigableString(fixed_link_url))
                                 elif link_text:
-                                    # Properly format markdown link with embedded URL
+                                    # Properly format Markdown link with embedded URL
                                     a.replace_with(NavigableString(f"[{a.get_text(strip=True)}]({fixed_link_url})"))
                                 else:
                                     a.extract()
@@ -419,20 +414,10 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                             # Also create a semantic key for more aggressive deduplication
                             semantic_key = re.sub(r'\W+', '', dedup_key)  # Remove remaining non-word characters
 
-                            # For very short content (likely single list items), be more aggressive with deduplication
-                            # Extract key identifiers (like student index numbers) for comparison
-                            student_indices = re.findall(r'\d+/\d{4}', clean_text)  # Pattern like "17/2024"
-                            score_patterns = re.findall(r'\d+\.?\d*\s*poen[a]?',
-                                                        clean_text.lower())  # Pattern like "3 poena"
-
                             # Log for debugging
                             logger.debug(f"Original text: {clean_text[:100]}")
                             logger.debug(f"Dedup key: {dedup_key[:100]}")
                             logger.debug(f"Semantic key: {semantic_key[:50]}")
-                            if student_indices:
-                                logger.debug(f"Student indices found: {student_indices}")
-                            if score_patterns:
-                                logger.debug(f"Score patterns found: {score_patterns}")
 
                             # Check for both exact and semantic duplicates
                             is_duplicate = False
@@ -440,50 +425,20 @@ async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
                                 is_duplicate = True
                                 logger.debug(f"Exact duplicate found: {dedup_key[:30]}")
                             elif semantic_key in seen_semantic_keys and len(
-                                    semantic_key) > 10:  # Lower threshold for detection
+                                    semantic_key) > 15:  # Only for substantial content
                                 is_duplicate = True
                                 logger.debug(f"Semantic duplicate found: {semantic_key[:30]}")
 
-                            # Check if this line contains student indices that we've already seen
-                            if not is_duplicate and student_indices:
-                                # Create a signature from student indices in this text
-                                indices_signature = ','.join(sorted(student_indices))
-                                if indices_signature in seen_student_indices:
-                                    is_duplicate = True
-                                    logger.debug(f"Duplicate student indices found: {indices_signature}")
-                                else:
-                                    # Check if ANY of these indices were seen before (partial match)
-                                    for idx in student_indices:
-                                        if idx in seen_student_indices:
-                                            # This is likely a partial duplicate (single line from a list)
-                                            is_duplicate = True
-                                            logger.debug(f"Partial duplicate - student index {idx} already seen")
-                                            break
-
-                                # If not duplicate, add these indices to seen set
-                                if not is_duplicate:
-                                    seen_student_indices.add(indices_signature)
-                                    for idx in student_indices:
-                                        seen_student_indices.add(idx)
-
-                            # Check for substring relationships with more aggressive matching
-                            if not is_duplicate and len(semantic_key) > 5:
+                            # Check for substring relationships (one text contains another) - more lenient threshold
+                            if not is_duplicate and len(semantic_key) > 10:
                                 for existing_key in seen_semantic_keys:
-                                    # Calculate similarity ratio
-                                    if len(existing_key) > 5:
-                                        # Check if one is substring of another
-                                        if semantic_key in existing_key or existing_key in semantic_key:
-                                            # Only mark as duplicate if there's significant overlap
-                                            shorter = min(len(semantic_key), len(existing_key))
-                                            longer = max(len(semantic_key), len(existing_key))
-                                            overlap_ratio = shorter / longer if longer > 0 else 0
-
-                                            # If overlap is more than 70%, it's likely a duplicate
-                                            if overlap_ratio > 0.7:
-                                                is_duplicate = True
-                                                logger.debug(
-                                                    f"Substring duplicate found (ratio: {overlap_ratio:.2f}): {semantic_key[:30]} vs {existing_key[:30]}")
-                                                break
+                                    if (len(existing_key) > 10 and
+                                            (len(semantic_key) > 20 and semantic_key in existing_key) or
+                                            (len(existing_key) > 20 and existing_key in semantic_key)):
+                                        is_duplicate = True
+                                        logger.debug(
+                                            f"Substring duplicate found: {semantic_key[:30]} vs {existing_key[:30]}")
+                                        break
 
                             if not is_duplicate and dedup_key and semantic_key:
                                 seen_keys.add(dedup_key)
