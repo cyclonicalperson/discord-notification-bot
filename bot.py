@@ -157,32 +157,73 @@ def create_dedup_key(text):
 
 
 def format_table(table_elem):
-    """Format HTML table into Discord-friendly text format."""
+    """Format HTML table into Discord-friendly text format with proper alignment."""
     rows = table_elem.find_all('tr')
     if not rows:
         return None
 
-    formatted_rows = []
+    # First pass: collect all cell data and calculate column widths
+    table_data = []
+    col_widths = []
+
     for row in rows:
         cells = row.find_all(['td', 'th'])
-        if cells:
-            # Get cell text and clean it
-            cell_texts = [cell.get_text(strip=True) for cell in cells]
-            # Filter out empty cells
-            cell_texts = [text for text in cell_texts if text]
-            if cell_texts:
-                # Join cells with | separator for table-like appearance
-                formatted_rows.append(' | '.join(cell_texts))
+        row_data = []
 
-    if formatted_rows:
-        # Add a simple separator line after header if there are multiple rows
-        if len(formatted_rows) > 1:
-            # Create separator based on first row length
-            separator = '-' * min(len(formatted_rows[0]), 50)
-            formatted_rows.insert(1, separator)
-        return '\n'.join(formatted_rows)
+        for i, cell in enumerate(cells):
+            # Get cell text, keep empty cells as empty string
+            cell_text = cell.get_text(strip=True)
+            row_data.append(cell_text)
 
-    return None
+            # Track column width
+            if len(col_widths) <= i:
+                col_widths.append(len(cell_text))
+            else:
+                col_widths[i] = max(col_widths[i], len(cell_text))
+
+        if row_data:  # Only add rows that have at least one cell
+            table_data.append(row_data)
+
+    if not table_data:
+        return None
+
+    # Ensure all rows have the same number of columns
+    max_cols = max(len(row) for row in table_data)
+    for row in table_data:
+        while len(row) < max_cols:
+            row.append('')  # Pad with empty strings
+
+    # Update column widths to include padding for empty cells
+    col_widths = [max(3, w) for w in col_widths]  # Minimum width of 3
+    if len(col_widths) < max_cols:
+        col_widths.extend([3] * (max_cols - len(col_widths)))
+
+    # Format rows with proper spacing
+    formatted_rows = []
+    for idx, row in enumerate(table_data):
+        # Pad each cell to column width
+        padded_cells = []
+        for i, cell in enumerate(row):
+            width = col_widths[i] if i < len(col_widths) else 10
+            # For empty cells, use "—" or spaces to make them visible
+            display_cell = cell if cell else "—"
+            padded_cells.append(display_cell.ljust(width))
+
+        # Join cells with | separator
+        formatted_row = " | ".join(padded_cells)
+        formatted_rows.append(formatted_row)
+
+        # Add separator line after first row (header) if there are multiple rows
+        if idx == 0 and len(table_data) > 1:
+            # Create separator based on actual formatted row length
+            separator_parts = []
+            for width in col_widths[:len(row)]:
+                separator_parts.append('-' * width)
+            separator = '-+-'.join(separator_parts)
+            formatted_rows.append(separator)
+
+    # Wrap in code block for better formatting in Discord
+    return '```\n' + '\n'.join(formatted_rows) + '\n```'
 
 
 async def fetch_announcements(base_url, add_to_seen=True, limit_newest=False):
